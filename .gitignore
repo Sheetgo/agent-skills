@@ -1,1 +1,14 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+creds.json
+
+# Claude session state (not skills)
+**/.claude/sessions/
