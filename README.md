@@ -9,10 +9,12 @@ agent-skills/
 ├── skills/           # Skill definitions (SKILL.md files)
 │   ├── plan-hardening/
 │   ├── squash-commits/
+│   ├── start-work/
 │   └── undo-squash/
 ├── commands/         # Command stubs for explicit invocation
 │   ├── plan-hardening.md
 │   ├── squash-commits.md
+│   ├── start-work.md
 │   └── undo-squash.md
 └── hooks/            # Safety hooks
     └── dangerous-command-blocker.py
@@ -24,6 +26,7 @@ agent-skills/
 |-------|-------------|
 | `plan-hardening` | Systematically validate draft designs until convergence (0 must-fix, 0 should-fix). Use after brainstorming when discovery is done but confidence is low. |
 | `squash-commits` | Consolidate commits into cohesive logical groups. Use when all todos are completed and ready to push. |
+| `start-work` | Initialize a feature or fix branch with session tracking. Use when starting new work that will span multiple commits. |
 | `undo-squash` | Restore commits to pre-squash state. Use when grouping was wrong or need original history back. |
 
 ## Hooks
