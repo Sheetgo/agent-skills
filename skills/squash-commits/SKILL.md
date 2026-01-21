@@ -7,7 +7,7 @@ description: "Consolidate commits into cohesive logical groups. Use ONLY when al
 
 ## Overview
 
-This skill analyzes commits since session start, groups them by logical boundaries (todo items + commit prefixes), and consolidates them into clean, meaningful commits.
+This skill analyzes commits since branch creation, groups them by logical boundaries (todo items + commit prefixes), and consolidates them into clean, meaningful commits.
 
 ## When to Use
 
@@ -40,27 +40,18 @@ if echo "$BRANCH" | grep -qE "^(main|master)$"; then
 fi
 ```
 
-### 3. Find Session Tag
+### 3. Find Branch Start Point
 
 ```bash
-SESSION_TAG=$(git tag -l "_session-start-${SANITIZED_BRANCH}-*" | sort | tail -1)
-
-if [ -z "$SESSION_TAG" ]; then
-  # No session - offer retroactive creation
-  MERGE_BASE=$(git merge-base main HEAD 2>/dev/null)
-  if [ -z "$MERGE_BASE" ]; then
-    echo "Error: Cannot find merge base with main."
-    exit 1
-  fi
-
-  COMMIT_COUNT=$(git log "$MERGE_BASE"..HEAD --oneline | wc -l | tr -d " ")
-  echo "No session found. Found $COMMIT_COUNT commits since branching from main."
-  echo "Create session from branch point and continue? [y/n]"
-
-  # If user confirms, create tag at merge-base
-  # SESSION_TAG="_session-start-${SANITIZED_BRANCH}-$(date +%s)"
-  # git tag "$SESSION_TAG" "$MERGE_BASE"
+# Use merge-base to find where branch diverged from master
+MERGE_BASE=$(git merge-base master HEAD 2>/dev/null)
+if [ -z "$MERGE_BASE" ]; then
+  echo "Error: Cannot find merge base with master."
+  exit 1
 fi
+
+COMMIT_COUNT=$(git log "$MERGE_BASE"..HEAD --oneline | wc -l | tr -d " ")
+echo "Found $COMMIT_COUNT commits since branching from master."
 ```
 
 ### 4. Check for Pushed Commits
@@ -68,10 +59,13 @@ fi
 ```bash
 UPSTREAM=$(git rev-parse --abbrev-ref @{u} 2>/dev/null)
 if [ -n "$UPSTREAM" ]; then
-  if git branch -r --contains "$SESSION_TAG" 2>/dev/null | grep -q "origin/"; then
-    echo "Error: Commits since session start have been pushed."
-    echo "Cannot safely squash without force push."
-    exit 1
+  # Check if merge-base is in remote
+  if git branch -r --contains "$MERGE_BASE" 2>/dev/null | grep -q "origin/"; then
+    REMOTE_HEAD=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
+    if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$(git rev-parse HEAD)" ]; then
+      echo "Warning: Some commits may have been pushed."
+      echo "Squashing will require force push. Continue? [y/n]"
+    fi
   fi
 fi
 ```
@@ -79,7 +73,7 @@ fi
 ### 5. Check for Merge Commits
 
 ```bash
-MERGES=$(git log "$SESSION_TAG"..HEAD --merges --oneline | wc -l | tr -d " ")
+MERGES=$(git log "$MERGE_BASE"..HEAD --merges --oneline | wc -l | tr -d " ")
 if [ "$MERGES" -gt 0 ]; then
   echo "Warning: Branch has $MERGES merge commit(s)."
   echo "Squashing may produce unexpected results. Continue? [y/n]"
@@ -90,11 +84,11 @@ fi
 
 ```bash
 SESSION_DIR=".claude/sessions/${SANITIZED_BRANCH}"
-if [ -f "$SESSION_DIR/last-squash" ]; then
-  LAST_SHA=$(cat "$SESSION_DIR/last-squash")
+if [ -f "$SESSION_DIR/last-squash.json" ]; then
+  LAST_SHA=$(jq -r .newHead "$SESSION_DIR/last-squash.json" 2>/dev/null)
   if [ "$LAST_SHA" = "$(git rev-parse HEAD)" ]; then
     echo "Already squashed at current HEAD."
-    echo "Use --force to re-squash, or make more commits first."
+    echo "Make more commits first, or use /undo-squash to restore."
     exit 0
   fi
 fi
@@ -105,7 +99,7 @@ fi
 ### Get Commits to Analyze
 
 ```bash
-git log "$SESSION_TAG"..HEAD --oneline --format="%H|%s|%aI"
+git log "$MERGE_BASE"..HEAD --oneline --format="%H|%s|%aI"
 ```
 
 ### Grouping Algorithm
@@ -115,15 +109,15 @@ git log "$SESSION_TAG"..HEAD --oneline --format="%H|%s|%aI"
    - Commits during a todo's active period belong to that todo
 
 2. **Fallback: Group by commit prefix**:
-   - Extract prefix: `feat:`, `fix:`, `test:`, `refactor:`, `chore:`, `wip:`
+   - Extract prefix: `feat:`, `fix:`, `test:`, `docs:`, `chore:`
    - Group consecutive commits with same prefix family
 
 3. **Determine dominant prefix per group**:
    - `feat` + anything → `feat:` (feature includes its tests/fixes)
    - `fix` + `test` → `fix:` (fix includes its verification)
    - `test` only → `test:`
-   - `refactor` only → `refactor:`
-   - `chore`/`wip` only → `chore:`
+   - `docs` only → `docs:`
+   - `chore` only → `chore:`
 
 4. **Handle external commits** (no Claude signature):
    - Group separately or merge with adjacent group
@@ -142,7 +136,7 @@ Proposed consolidation (15 commits -> 3):
    - Combines: 5 commits
    - Files: session.ts, session.test.ts
 
-3. refactor: Clean up legacy auth code
+3. chore: Clean up legacy auth code
    - Combines: 4 commits
    - Files: legacy-auth.ts (deleted), imports.ts
 
@@ -160,7 +154,7 @@ BACKUP_TAG="_squash-backup-$(date +%s)"
 git tag "$BACKUP_TAG"
 
 # Create bundle for undo
-git bundle create "$SESSION_DIR/pre-squash.bundle" "$SESSION_TAG"..HEAD
+git bundle create "$SESSION_DIR/pre-squash.bundle" "$MERGE_BASE"..HEAD
 
 # Record in-progress state
 cat > "$SESSION_DIR/squash-in-progress.json" << EOF
@@ -168,7 +162,7 @@ cat > "$SESSION_DIR/squash-in-progress.json" << EOF
   "status": "started",
   "backupTag": "$BACKUP_TAG",
   "originalHead": "$(git rev-parse HEAD)",
-  "sessionTag": "$SESSION_TAG",
+  "mergeBase": "$MERGE_BASE",
   "startTime": "$(date -Iseconds)"
 }
 EOF
@@ -179,8 +173,8 @@ echo "Backup created: $BACKUP_TAG"
 ## Execution
 
 ```bash
-# 1. Soft reset to session start
-git reset --soft "$SESSION_TAG"
+# 1. Soft reset to merge base
+git reset --soft "$MERGE_BASE"
 
 # 2. Create consolidated commits (Claude determines grouping)
 # For each group:
@@ -201,14 +195,8 @@ cat > "$SESSION_DIR/last-squash.json" << EOF
 }
 EOF
 
-# 5. Delete session tag (no longer needed)
-git tag -d "$SESSION_TAG"
-
 # NOTE: Backup tag and bundle are PRESERVED for /undo-squash
-# They will be cleaned up by:
-#   - /undo-squash (after restore)
-#   - /start-work (when starting new work)
-#   - Explicit cleanup command
+# Clean up manually with /cleanup-squash when no longer needed
 ```
 
 ## Undo Available
@@ -219,9 +207,7 @@ After squash completes, inform user:
 Squash complete! Backups preserved for undo.
 
 To undo this squash:  /undo-squash
-To clean up backups:  /cleanup-squash-backups
-
-Backups auto-cleanup when you run /start-work for new work.
+To clean up backups:  /cleanup-squash
 ```
 
 ## Commit Message Format

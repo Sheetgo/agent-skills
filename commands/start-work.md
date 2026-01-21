@@ -1,5 +1,5 @@
 ---
-description: "Initialize a feature or fix branch with session tracking. Use when starting new work."
+description: "Initialize a feature or fix branch. Use when starting new work."
 ---
 
-Invoke the start-work skill at ~/.claude/skills/start-work/SKILL.md and follow it exactly.
+Invoke the git-conventions skill at ~/.claude/skills/git-conventions/SKILL.md and follow the "Branch Creation (/start-work)" section exactly.
