@@ -46,9 +46,11 @@ Team conventions for git workflow: branch naming and commit message format. Comm
 
 ### Wizard Flow
 
-1. **Work type?** → `feature`, `fix`, or custom
-2. **Ticket ID?** → `SG-1234` (optional)
-3. **Short description?** → `user-auth` (kebab-case)
+Use `AskUserQuestion` for each step:
+
+1. **Work type?** → Options: `feature`, `fix`, `chore`
+2. **Ticket ID?** → Text input (optional, format: `SG-1234`)
+3. **Short description?** → Text input (kebab-case, e.g., `user-auth`)
 
 ### Branch Naming
 
