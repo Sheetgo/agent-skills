@@ -7,18 +7,229 @@ description: "Consolidate commits into cohesive logical groups. Use ONLY when al
 
 ## Overview
 
-This skill analyzes commits since branch creation, groups them by logical boundaries (todo items + commit prefixes), and consolidates them into clean, meaningful commits.
+This skill analyzes commits since branch creation, groups them by logical boundaries, and consolidates them into clean, meaningful commits with preserved timestamps.
 
 ## When to Use
 
 - **ONLY** when all todos are completed (hook will notify you)
 - Manual invocation via `/squash-commits` when explicitly requested by user
 
-## Safety Checks (Run First)
+---
+
+## 1. Transparency Requirements
+
+**CRITICAL:** Announce every action, strategy choice, and issue. Never operate silently.
+
+### Required Announcements
+
+| When | Announcement |
+|------|--------------|
+| Backup created | `"📦 Backup created: _squash-backup-XXX"` |
+| Strategy chosen | `"📋 Strategy: [name]. Reason: [why]"` |
+| Strategy switch | `"⚠️ Switching from [X] to [Y]. Reason: [why]"` |
+| Each commit | `"✅ Creating commit N of M: [message]"` |
+| Verification | `"✅ Verification passed"` or `"❌ Issue found: [what]"` |
+| On any issue | `"❌ Issue: [what]. Action: [rollback/retry/ask]"` |
+| Complete | `"🎉 Squash complete! X commits → Y commits"` |
+
+### Available Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| Soft Reset | Default. `git reset --soft`, all changes to staging |
+| Interactive Rebase | `git rebase -i` with pick/squash/fixup |
+| Cherry-pick | Reset to base, cherry-pick specific commits |
+
+Agent may choose any strategy but MUST announce and explain the choice.
+
+---
+
+## 2. Wizard UX
+
+**RULE:** Never ask questions requiring manual text input. Always use multiple choice via AskUserQuestion tool.
+
+### Decision Points
+
+| Decision | Options |
+|----------|---------|
+| Grouping strategy | Single / Time cluster / Prefix / Logical |
+| Time cluster granularity | Hour gaps / Session gaps / Day |
+| Commit timestamp | Last (default) / First / Middle |
+| Confirm preview | Proceed / Adjust / Cancel |
+| On failure | Rollback & retry / Rollback & stop / Ask me |
+| After success | Delete backup / Keep backup |
+
+### Wizard Flow
+
+**Step 1: Grouping** (skip if simple case - auto-select prefix)
+```
+How should I group these N commits?
+  ○ Single commit - All N → 1
+  ○ By time clustering - Based on when committed
+  ○ By commit prefix - Group feat/fix/test (Recommended)
+  ○ By logical change - Split shared files (advanced)
+```
+
+**Step 2: Timestamp** (if multiple groups)
+```
+What timestamp for each squashed commit?
+  ○ Last commit time (Recommended) - When work finished
+  ○ First commit time - When work started
+  ○ Middle (average) time
+```
+
+**Step 3: Preview**
+```
+Preview: N commits → M groups
+
+1. feat: Add auth (9:00-9:30, 4 commits) → 9:30
+2. fix: Fix login (14:00-14:15, 2 commits) → 14:15
+3. test: Add tests (10:00-10:20, 2 commits) → 10:20
+
+  ○ Proceed
+  ○ Adjust grouping
+  ○ Cancel
+```
+
+**Step 3b: Adjust** (if selected)
+```
+What would you like to change?
+  ○ Grouping strategy (currently: [current])
+  ○ Clustering granularity (currently: [current])
+  ○ Timestamp selection (currently: [current])
+  ○ Start over from beginning
+```
+
+---
+
+## 3. Grouping Strategies
+
+### Simple vs Complex Detection
+
+| Criteria | Simple | Complex |
+|----------|--------|---------|
+| File overlap | Each file in exactly 1 prefix group | Same file in 2+ prefix groups |
+| Commit count | ≤ 10 commits | > 10 commits |
+| Time span | Same day | Multiple days |
+
+**Complex if ANY criteria is complex.**
+
+- **Simple case:** Auto-select commit prefix grouping, show preview, confirm
+- **Complex case:** Show wizard, ask user to choose strategy
+
+### Grouping Options
+
+| Option | Description | Risk |
+|--------|-------------|------|
+| **Single commit** | All commits → 1 | None |
+| **Time clustering** | Group by work sessions | Low |
+| **Commit prefix** | Group by feat/fix/test (default) | Low |
+| **Logical change** | Split files with `git add -p` | Medium |
+
+### Time Clustering Granularity
+
+| Granularity | Logic |
+|-------------|-------|
+| Hour gaps | New group when gap > 1 hour |
+| Session gaps | New group when gap > 4 hours |
+| Day | New group on different calendar day |
+
+### Prefix Grouping Rules
+
+1. Extract prefix: `feat:`, `fix:`, `test:`, `docs:`, `chore:`
+2. Group consecutive commits with same prefix family
+3. Determine dominant prefix per group:
+   - `feat` + anything → `feat:` (feature includes its tests/fixes)
+   - `fix` + `test` → `fix:` (fix includes its verification)
+   - `test` only → `test:`
+   - `docs` only → `docs:`
+   - `chore` only → `chore:`
+
+---
+
+## 4. Commit Time Preservation
+
+**RULE:** Squashed commits MUST use timestamps from original commits.
+
+### Implementation
+
+```bash
+GIT_AUTHOR_DATE="<timestamp>" \
+GIT_COMMITTER_DATE="<timestamp>" \
+git commit -m "<message>"
+```
+
+### Timestamp Options
+
+| Option | Description |
+|--------|-------------|
+| Last (default) | Latest commit time in group |
+| First | Earliest commit time in group |
+| Middle | Average of first and last |
+
+### Announcement
+
+```
+📅 Preserving commit times (using last commit of each group):
+  • Group 1: 2026-01-23 09:30:00
+  • Group 2: 2026-01-23 14:15:00
+  • Group 3: 2026-01-24 10:20:00
+```
+
+---
+
+## 5. Verification
+
+After squash completes, ALWAYS verify:
+
+### Checks
+
+1. `git status --porcelain` must be empty (no uncommitted changes)
+2. `git diff <backup-tag> HEAD` must be empty (codebase unchanged)
+
+### On Success
+
+```
+✅ Verification passed: codebase matches pre-squash state
+```
+
+### On Failure
+
+```
+❌ Verification FAILED: [uncommitted changes | codebase differs]
+
+What should I do?
+  ○ Rollback and retry with different strategy
+  ○ Rollback and stop (investigate manually)
+  ○ Show me the diff
+```
+
+---
+
+## 6. Error Handling
+
+### On Any Git Command Failure
+
+1. ANNOUNCE: `"❌ Git error: [error message]"`
+2. IF backup exists → attempt rollback: `git reset --hard <backup-tag>`
+3. ANNOUNCE: `"🔄 Rolled back to backup"`
+4. ASK user:
+   ```
+   Git failed. What now?
+     ○ Retry the squash
+     ○ Stop and investigate manually
+   ```
+5. IF rollback also fails → show manual recovery commands
+
+**Key principle:** Always attempt rollback first, never leave repo in partial state.
+
+---
+
+## 7. Safety Checks (Run First)
 
 Before any squash operation, verify:
 
-### 1. Clean Working Tree
+### 7.1 Clean Working Tree
 
 ```bash
 if [ -n "$(git status --porcelain)" ]; then
@@ -28,7 +239,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 ```
 
-### 2. Get Current Branch
+### 7.2 Get Current Branch
 
 ```bash
 BRANCH=$(git branch --show-current)
@@ -40,10 +251,9 @@ if echo "$BRANCH" | grep -qE "^(main|master)$"; then
 fi
 ```
 
-### 3. Find Branch Start Point
+### 7.3 Find Branch Start Point
 
 ```bash
-# Use merge-base to find where branch diverged from master
 MERGE_BASE=$(git merge-base master HEAD 2>/dev/null)
 if [ -z "$MERGE_BASE" ]; then
   echo "Error: Cannot find merge base with master."
@@ -54,33 +264,31 @@ COMMIT_COUNT=$(git log "$MERGE_BASE"..HEAD --oneline | wc -l | tr -d " ")
 echo "Found $COMMIT_COUNT commits since branching from master."
 ```
 
-### 4. Check for Pushed Commits
+### 7.4 Check for Pushed Commits
 
 ```bash
 UPSTREAM=$(git rev-parse --abbrev-ref @{u} 2>/dev/null)
 if [ -n "$UPSTREAM" ]; then
-  # Check if merge-base is in remote
-  if git branch -r --contains "$MERGE_BASE" 2>/dev/null | grep -q "origin/"; then
-    REMOTE_HEAD=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
-    if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$(git rev-parse HEAD)" ]; then
-      echo "Warning: Some commits may have been pushed."
-      echo "Squashing will require force push. Continue? [y/n]"
-    fi
+  REMOTE_HEAD=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
+  if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$(git rev-parse HEAD)" ]; then
+    # Use wizard to ask
+    echo "Warning: Some commits may have been pushed."
+    echo "Squashing will require force push."
   fi
 fi
 ```
 
-### 5. Check for Merge Commits
+### 7.5 Check for Merge Commits
 
 ```bash
 MERGES=$(git log "$MERGE_BASE"..HEAD --merges --oneline | wc -l | tr -d " ")
 if [ "$MERGES" -gt 0 ]; then
   echo "Warning: Branch has $MERGES merge commit(s)."
-  echo "Squashing may produce unexpected results. Continue? [y/n]"
+  echo "Squashing may produce unexpected results."
 fi
 ```
 
-### 6. Check for Recent Squash
+### 7.6 Check for Recent Squash
 
 ```bash
 SESSION_DIR=".claude/sessions/${SANITIZED_BRANCH}"
@@ -94,56 +302,9 @@ if [ -f "$SESSION_DIR/last-squash.json" ]; then
 fi
 ```
 
-## Analysis Phase
+---
 
-### Get Commits to Analyze
-
-```bash
-git log "$MERGE_BASE"..HEAD --oneline --format="%H|%s|%aI"
-```
-
-### Grouping Algorithm
-
-1. **Map commits to todo items** (if TodoWrite history available):
-   - Correlate commit timestamps with todo `in_progress` times
-   - Commits during a todo's active period belong to that todo
-
-2. **Fallback: Group by commit prefix**:
-   - Extract prefix: `feat:`, `fix:`, `test:`, `docs:`, `chore:`
-   - Group consecutive commits with same prefix family
-
-3. **Determine dominant prefix per group**:
-   - `feat` + anything → `feat:` (feature includes its tests/fixes)
-   - `fix` + `test` → `fix:` (fix includes its verification)
-   - `test` only → `test:`
-   - `docs` only → `docs:`
-   - `chore` only → `chore:`
-
-4. **Handle external commits** (no Claude signature):
-   - Group separately or merge with adjacent group
-   - Ask user preference if significant
-
-## Preview (Show Before Executing)
-
-```
-Proposed consolidation (15 commits -> 3):
-
-1. feat: Implement user authentication (ref SG-1234)
-   - Combines: 6 commits
-   - Files: auth.ts, auth.test.ts, middleware.ts
-
-2. feat: Add session management (ref SG-1234)
-   - Combines: 5 commits
-   - Files: session.ts, session.test.ts
-
-3. chore: Clean up legacy auth code
-   - Combines: 4 commits
-   - Files: legacy-auth.ts (deleted), imports.ts
-
-Proceed? [Y/n]
-```
-
-## Backup Before Squash
+## 8. Backup Before Squash
 
 ```bash
 SESSION_DIR=".claude/sessions/${SANITIZED_BRANCH}"
@@ -152,6 +313,9 @@ mkdir -p "$SESSION_DIR"
 # Create backup tag
 BACKUP_TAG="_squash-backup-$(date +%s)"
 git tag "$BACKUP_TAG"
+
+# ANNOUNCE
+echo "📦 Backup created: $BACKUP_TAG"
 
 # Create bundle for undo
 git bundle create "$SESSION_DIR/pre-squash.bundle" "$MERGE_BASE"..HEAD
@@ -166,25 +330,35 @@ cat > "$SESSION_DIR/squash-in-progress.json" << EOF
   "startTime": "$(date -Iseconds)"
 }
 EOF
-
-echo "Backup created: $BACKUP_TAG"
 ```
 
-## Execution
+---
+
+## 9. Execution
 
 ```bash
+# ANNOUNCE strategy
+echo "📋 Strategy: soft reset. Reason: default, all changes preserved in staging"
+
 # 1. Soft reset to merge base
 git reset --soft "$MERGE_BASE"
+echo "🔄 Reset to merge base, all changes staged"
 
-# 2. Create consolidated commits (Claude determines grouping)
+# 2. Create consolidated commits with preserved timestamps
 # For each group:
-#   git add <files-in-group>
-#   git commit -m "<prefix>: <message> (ref <ticket>)"
+#   ANNOUNCE: "✅ Creating commit N of M: <message>"
+#   GIT_AUTHOR_DATE="<timestamp>" GIT_COMMITTER_DATE="<timestamp>" \
+#   git commit -m "<prefix>: <message>"
 
-# 3. Update squash state (KEEP backups for undo!)
+# 3. Verify
+git status --porcelain  # Must be empty
+git diff "$BACKUP_TAG" HEAD  # Must be empty
+echo "✅ Verification passed"
+
+# 4. Update squash state
 rm "$SESSION_DIR/squash-in-progress.json"
 
-# 4. Record successful squash with undo info
+# 5. Record successful squash
 cat > "$SESSION_DIR/last-squash.json" << EOF
 {
   "squashedAt": "$(date -Iseconds)",
@@ -195,22 +369,14 @@ cat > "$SESSION_DIR/last-squash.json" << EOF
 }
 EOF
 
-# NOTE: Backup tag and bundle are PRESERVED for /undo-squash
-# Clean up manually with /cleanup-squash when no longer needed
+# ANNOUNCE completion
+echo "🎉 Squash complete! X commits → Y commits"
+echo "Backups preserved. To undo: /undo-squash"
 ```
 
-## Undo Available
+---
 
-After squash completes, inform user:
-
-```
-Squash complete! Backups preserved for undo.
-
-To undo this squash:  /undo-squash
-To clean up backups:  /cleanup-squash
-```
-
-## Commit Message Format
+## 10. Commit Message Format
 
 With ticket:
 ```
@@ -238,7 +404,9 @@ Generated with [Claude Code](https://claude.com/claude-code)
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 ```
 
-## Recovery
+---
+
+## 11. Recovery
 
 If squash was interrupted, check for `squash-in-progress.json`:
 
@@ -248,9 +416,22 @@ if [ -f "$SESSION_DIR/squash-in-progress.json" ]; then
   BACKUP=$(jq -r .backupTag "$SESSION_DIR/squash-in-progress.json")
 
   echo "Previous squash interrupted at: $STATUS"
-  echo "Options:"
-  echo "  1. Recover original (git reset --hard $BACKUP)"
-  echo "  2. Continue from current state"
-  echo "  3. Abort and clean up"
+  # Use wizard:
+  #   ○ Recover original (git reset --hard $BACKUP)
+  #   ○ Continue from current state
+  #   ○ Abort and clean up
 fi
+```
+
+---
+
+## Undo Available
+
+After squash completes, inform user:
+
+```
+🎉 Squash complete! Backups preserved for undo.
+
+To undo this squash:  /undo-squash
+To clean up backups:  /cleanup-squash
 ```
