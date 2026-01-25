@@ -19,33 +19,64 @@ tool_input = input_data.get("tool_input", {})
 command = tool_input.get("command", "")
 
 # Only validate git commit commands
-if tool_name != "Bash" or "git commit" not in command:
+if tool_name != "Bash":
     sys.exit(0)
 
-# Extract commit message from -m flag
-# Handle both -m "message" and -m 'message' formats, including escaped quotes
-# Pattern handles: -m "message with \"quotes\"" and -m 'message'
-match = re.search(r'git commit.*?-m\s+"((?:[^"\\]|\\.)*)"', command)
-if not match:
-    # Try single quotes
-    match = re.search(r"git commit.*?-m\s+'((?:[^'\\]|\\.)*)'", command)
-if not match:
-    # Also try heredoc format: -m "$(cat <<'EOF' ... EOF)"
-    heredoc_match = re.search(
-        r'git commit.*?-m\s+"?\$\(cat\s+<<["\']?EOF["\']?\s*\n(.+?)\n\s*EOF',
-        command,
-        re.DOTALL
+# Strip heredoc content before checking for git commit
+# This prevents matching "git commit" that appears inside heredocs
+def strip_heredocs(cmd):
+    """Remove heredoc content to avoid false matches."""
+    # Match heredoc: << 'MARKER' or <<MARKER ... MARKER
+    # Replace content between markers with placeholder
+    result = re.sub(
+        r"<<\s*['\"]?(\w+)['\"]?\s*\n.*?\n\s*\1",
+        "<<HEREDOC_STRIPPED",
+        cmd,
+        flags=re.DOTALL
     )
-    if heredoc_match:
-        commit_msg = heredoc_match.group(1).strip()
-        # Get first line only for validation
-        commit_msg = commit_msg.split('\n')[0]
-    else:
-        sys.exit(0)  # Can't extract message, allow it
-else:
-    commit_msg = match.group(1)
-    # Unescape quotes
-    commit_msg = commit_msg.replace('\\"', '"').replace("\\'", "'")
+    return result
+
+# Strip heredocs and check if this is actually a git commit command
+stripped_cmd = strip_heredocs(command)
+
+# Check for git commit -m at meaningful positions (start, after && or ;)
+# Must NOT be inside quotes or echo/cat commands
+git_commit_pattern = r'(?:^|&&|;)\s*(?:GIT_[A-Z_]+="[^"]*"\s+)*git\s+commit\s+(?:-[a-z]+\s+)*-m\s'
+if not re.search(git_commit_pattern, stripped_cmd):
+    sys.exit(0)
+
+# Extract commit message - try heredoc format FIRST (most common for Claude Code)
+# Heredoc format: -m "$(cat <<'EOF' ... EOF )"
+commit_msg = None
+
+# Heredoc pattern - handles various formats Claude Code uses
+heredoc_match = re.search(
+    r'-m\s+"?\$\(cat\s+<<[\'"](EOF|COMMIT_MSG)[\'"]?\s*\n(.*?)\n\s*\1\s*\)?"?',
+    command,
+    re.DOTALL
+)
+if heredoc_match:
+    commit_msg = heredoc_match.group(2).strip()
+    # Get first line only for validation
+    commit_msg = commit_msg.split('\n')[0]
+
+# If no heredoc, try simple -m "message" format
+if not commit_msg:
+    # Simple double-quoted message (but NOT if it starts with $( which indicates heredoc)
+    match = re.search(r'-m\s+"((?!\$\()[^"\\]*(?:\\.[^"\\]*)*)"', command)
+    if match:
+        commit_msg = match.group(1)
+        commit_msg = commit_msg.replace('\\"', '"')
+
+# If still no match, try single quotes
+if not commit_msg:
+    match = re.search(r"-m\s+'([^']*)'", command)
+    if match:
+        commit_msg = match.group(1)
+
+# Can't extract message, allow it
+if not commit_msg:
+    sys.exit(0)
 
 # Passthrough patterns - skip validation for these
 passthrough_patterns = [
