@@ -28,7 +28,8 @@ This skill analyzes commits since branch creation, groups them by logical bounda
 | Strategy chosen | `"📋 Strategy: [name]. Reason: [why]"` |
 | Strategy switch | `"⚠️ Switching from [X] to [Y]. Reason: [why]"` |
 | Each commit | `"✅ Creating commit N of M: [message]"` |
-| Verification | `"✅ Verification passed"` or `"❌ Issue found: [what]"` |
+| Verification | Run `git diff <backup> HEAD` and SHOW output to user |
+| Diff result | `"No output - codebase identical ✅"` or show actual diff |
 | On any issue | `"❌ Issue: [what]. Action: [rollback/retry/ask]"` |
 | Complete | `"🎉 Squash complete! X commits → Y commits"` |
 
@@ -180,17 +181,36 @@ git commit -m "<message>"
 
 ## 5. Verification
 
-After squash completes, ALWAYS verify:
+After squash completes, ALWAYS verify AND show the diff to user:
 
 ### Checks
 
 1. `git status --porcelain` must be empty (no uncommitted changes)
-2. `git diff <backup-tag> HEAD` must be empty (codebase unchanged)
+2. **ALWAYS run and show:** `git diff <backup-tag> HEAD`
+
+### CRITICAL: Always Show Diff Output
+
+**You MUST run `git diff <backup-tag> HEAD` and show the output to the user**, even when expecting it to be empty. This provides:
+- Proof that no code was lost during squash
+- Transparency for user to verify themselves
+- Early detection if something went wrong
+
+```bash
+# ALWAYS run this and show output
+git diff <backup-tag> HEAD
+```
+
+If empty, announce: `"No output - the codebase is identical. ✅"`
 
 ### On Success
 
 ```
-✅ Verification passed: codebase matches pre-squash state
+✅ Verification passed
+
+git diff <backup-tag> HEAD
+(no output - codebase identical)
+
+The squash preserved all code changes exactly. Only the commit history changed.
 ```
 
 ### On Failure
@@ -198,10 +218,12 @@ After squash completes, ALWAYS verify:
 ```
 ❌ Verification FAILED: [uncommitted changes | codebase differs]
 
+git diff output:
+<show the actual diff>
+
 What should I do?
   ○ Rollback and retry with different strategy
   ○ Rollback and stop (investigate manually)
-  ○ Show me the diff
 ```
 
 ---
@@ -350,9 +372,10 @@ echo "🔄 Reset to merge base, all changes staged"
 #   GIT_AUTHOR_DATE="<timestamp>" GIT_COMMITTER_DATE="<timestamp>" \
 #   git commit -m "<prefix>: <message>"
 
-# 3. Verify
+# 3. Verify and SHOW diff to user
 git status --porcelain  # Must be empty
-git diff "$BACKUP_TAG" HEAD  # Must be empty
+git diff "$BACKUP_TAG" HEAD  # Run and SHOW output (should be empty)
+# If diff is empty: "No output - the codebase is identical. ✅"
 echo "✅ Verification passed"
 
 # 4. Update squash state
@@ -378,31 +401,88 @@ echo "Backups preserved. To undo: /undo-squash"
 
 ## 10. Commit Message Format
 
-With ticket:
-```
-feat: Implement user authentication (ref SG-1234)
+### CRITICAL: Meaningful Summaries, Not Verbose Lists
 
-- Add login/logout functionality
-- Add session persistence
-- Add auth middleware
+**Before writing commit messages, you MUST:**
+
+1. Read the full body of each original commit (not just subjects):
+   ```bash
+   git log <merge-base>..HEAD --format="=== %s ===%n%b" --reverse
+   ```
+
+2. Extract and synthesize:
+   - Architectural decisions and their rationale
+   - Design context (e.g., "3 rounds of plan hardening")
+   - Bug fixes with explanations of WHY the code was wrong
+   - Important behavioral changes
+
+3. Organize into logical sections with headers (##)
+
+**DO NOT** just list commit subjects as bullet points - that's verbose and loses the narrative.
+
+### Good Example (Synthesized)
+
+```
+feat: Add authorization error handling for external files (ref SG-1234)
+
+Design went through 3 rounds of plan hardening (17 issues found: 8 fixed,
+1 won't do, 10 deferred to future work).
+
+## Error scenarios handled
+
+- Auth revoked mid-session: Dialog prompts user to re-authorize via OAuth
+- File access lost: Pre-run validation detects inaccessible external files
+- Token expiration: Retry-once pattern with fresh OAuth token on 401
+
+## Backend changes
+
+- Add drive-error-helpers with standardized error throwing and validation
+- Add withApiResilience for exponential backoff on 429 rate limits
+- New error codes: AUTH_REVOKED, TOKEN_EXPIRED, SOURCE_ACCESS_LOST
+
+## Frontend changes
+
+- Add AuthRequiredDialog with 3 states: required → waiting → failed
+- Add useFileValidation hook for pre-run external file validation
+- Wire auth error detection into useAutomationRun with retry callback
 
 Generated with [Claude Code](https://claude.com/claude-code)
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 ```
 
-Without ticket:
+### Bad Example (Verbose List)
+
 ```
-feat: Implement user authentication
+feat: Add authorization error handling (ref SG-1234)
 
-- Add login/logout functionality
-- Add session persistence
-- Add auth middleware
-
-Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+- Add authorization error handling design
+- Revise authorization error handling design
+- Finalize authorization error handling design
+- Add drive error helpers
+- Add authorization status APIs
+- Add file validation API
+- Add auth service
+- Add AuthRequiredDialog component
+- Add useFileValidation hook
+...
 ```
+
+This is just copying commit subjects - it loses context and is hard to understand.
+
+### Structure Guidelines
+
+| Section | Content |
+|---------|---------|
+| Title line | Concise summary with ticket ref |
+| Context paragraph | Design process, scope, key decisions |
+| `## Category` sections | Group related changes logically |
+| Bullet points | Specific changes with WHY when non-obvious |
+| Footer | Claude Code link + Co-Authored-By |
+
+### Without ticket:
+
+Same format, just omit the `(ref XX-NNNN)` from title.
 
 ---
 
