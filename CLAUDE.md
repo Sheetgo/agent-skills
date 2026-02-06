@@ -1,0 +1,61 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What This Repo Is
+
+A collection of Claude Code skills, commands, and hooks that extend the AI agent's git workflow capabilities. These are installed by symlinking into `~/.claude/` and are used across other repositories.
+
+## Getting Started
+
+1. Clone the repo to a directory of your preference
+2. Open Claude Code in the cloned directory
+3. Browse the available skills, commands, and hooks — cherry-pick what you want
+4. Ask Claude to help you create the symlinks to your global Claude settings (`~/.claude/`). Skills go in `~/.claude/skills/`, commands in `~/.claude/commands/`, hooks in `~/.claude/hooks/`
+5. For hooks only: Claude will also help you register them in `~/.claude/settings.json` under `hooks.PreToolUse` (hooks require both the symlink and the registration to work)
+
+## Repository Structure
+
+```
+skills/{name}/SKILL.md    # Skill definitions (loaded by Claude Code automatically)
+commands/{name}.md         # Command stubs (thin wrappers that invoke skills)
+hooks/{name}.py            # PreToolUse hooks (Python, read JSON from stdin)
+docs/plans/                # Design documents (YYYY-MM-DD-{name}-design.md)
+```
+
+## Architecture Patterns
+
+### Skills vs Commands vs Hooks
+
+- **Skills** (`SKILL.md`): Full behavioral specifications with YAML frontmatter (`name`, `description`). They define *how* Claude should behave — wizard flows, safety checks, verification steps. Skills are the source of truth.
+- **Commands** (`.md`): Thin stubs that point to a skill and say "follow it exactly." They exist only to provide `/command-name` invocation. Never duplicate skill logic in commands.
+- **Hooks** (`.py`): Python scripts that run as `PreToolUse` handlers on `Bash` tool calls. They read tool input JSON from stdin and either `sys.exit(0)` (allow), `sys.exit(2)` (block), or print a JSON `permissionDecision` object to deny with a reason.
+
+### Hook Protocol
+
+Hooks receive JSON on stdin with `tool_name` and `tool_input.command`. To block a command, exit with code 2 and print to stderr. To deny with feedback (so the agent can self-correct), print a JSON object with `hookSpecificOutput.permissionDecision: "deny"` and exit 0. See `git-conventions.py` for the deny-with-feedback pattern.
+
+### Session State
+
+Squash operations store state in `.claude/sessions/{sanitized-branch}/` (branch name with `/` replaced by `-`). Files: `last-squash.json`, `squash-in-progress.json`, `pre-squash.bundle`. This directory is gitignored.
+
+### Wizard UX Convention
+
+All user-facing decisions use `AskUserQuestion` with multiple-choice options. Skills never ask for free text input — always provide selectable options.
+
+## Git Conventions (Enforced by Hook)
+
+Commit format: `type: Description` where type is `feat|fix|docs|chore|test` and description starts with a capital letter. Passthrough: `Merge`, `Revert "..."`, `Initial commit`.
+
+Branch naming: `{feature|fix|chore}/{optional-ticket-id-}kebab-description` (e.g., `feature/SG-1234-user-auth`).
+
+## Design Document Workflow
+
+Design docs live in `docs/plans/` with naming `YYYY-MM-DD-{topic}-design.md`. They go through plan-hardening (systematic review across 10 core + 8 optional categories) until convergence (0 must-fix, 0 should-fix issues). A temporary tracker file (`{plan-name}-tracker.md`) is used during hardening and deleted at finalization.
+
+## Adding New Components
+
+- **New skill**: Create `skills/{name}/SKILL.md` with YAML frontmatter
+- **New command**: Create `commands/{name}.md` pointing to the skill
+- **New hook**: Create `hooks/{name}.py` following the stdin JSON protocol, then register in `~/.claude/settings.json` under `hooks.PreToolUse`
+- After adding, re-run symlink commands from README setup section

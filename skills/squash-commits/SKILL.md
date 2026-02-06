@@ -11,7 +11,7 @@ This skill analyzes commits since branch creation, groups them by logical bounda
 
 ## When to Use
 
-- **ONLY** when all todos are completed (hook will notify you)
+- **ONLY** when all todos are completed and you're ready to push
 - Manual invocation via `/squash-commits` when explicitly requested by user
 
 ---

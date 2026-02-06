@@ -1,6 +1,6 @@
 # Agent Skills
 
-Personal collection of AI agent skills and hooks for coding assistants.
+Collection of AI agent skills and hooks for coding assistants.
 
 ## Structure
 
@@ -50,6 +50,10 @@ agent-skills/
 | `git-conventions.py` | Validates commit messages follow `type: Description` format. |
 
 ## Dependencies
+
+### Hooks (general)
+
+All hooks require **Python 3.6+** (uses only standard library modules: `json`, `sys`, `re`).
 
 ### dangerous-command-blocker.py
 
