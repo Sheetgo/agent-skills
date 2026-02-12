@@ -7,11 +7,27 @@ description: Use when creating API tests for any API project (Flask, FastAPI, Ex
 
 Framework-agnostic API test generator. Two commands: `init` (analyze project, create `.api-spec.md`) and `create` (generate YAML tests in `spec-files/`).
 
-**Test Runner:** go-runner (Go-based, expr-lang). See project CLAUDE.md for go-runner docs. See `reference.md` in this skill directory for templates, expression syntax, and format examples.
+**Core principle:** Tests generated from route signatures alone miss most bugs. Deep source tracing — through handlers, controllers, services, and exception classes — ensures every code branch has a test.
+
+**Test Runner:** go-runner (Go-based, expr-lang). See project CLAUDE.md for go-runner docs.
+
+**Reference file:** `reference.md` in this skill directory contains expression syntax, templates, and format examples. When dispatching parallel agents, **read `reference.md` first and include the relevant sections** (expression syntax table, YAML template) in each agent's prompt — subagents cannot access it automatically.
+
+## When to Use
+
+- API project needs integration tests for go-runner
+- Project uses Flask, FastAPI, Django, Express, NestJS, or Go
+- Existing test coverage is shallow (only happy path) or missing entirely
+- New endpoints added and need test generation
+
+**When NOT to use:** Unit tests, non-HTTP services, projects not using go-runner as test runner.
 
 ## Command: `init`
 
-Scan project → Detect framework → Find endpoints → Extract parameters → Ask gap-filling questions → Generate `.api-spec.md` + `spec-files/.env.example` + `spec-files/{{project-name}}-config.yaml`
+1. Scan project and detect framework
+2. Find all endpoints and extract parameters
+3. Ask gap-filling questions (see below)
+4. Generate `.api-spec.md` (with coverage bar at 0%) + `spec-files/.env.example` + `spec-files/{{project-name}}-config.yaml`
 
 **Framework detection:** Scan `package.json`, `go.mod`, `requirements.txt`, or source imports for Flask/FastAPI/Django/Express/NestJS/Go patterns.
 
@@ -19,7 +35,19 @@ Scan project → Detect framework → Find endpoints → Extract parameters → 
 
 **Config file rules:** Always use folder includes (`!include module/`). See `reference.md` for format.
 
-**Re-running init:** Merges with existing `.api-spec.md`. Shows ADDED/MODIFIED/REMOVED diff. NEVER overwrites: descriptions, notes, custom env vars, "Tested: Yes" markers.
+**Re-running init:** Merges with existing `.api-spec.md` and shows a diff summary.
+
+| Action | Behavior |
+|--------|----------|
+| New endpoint found | ADDED — appended to module table |
+| Endpoint signature changed | MODIFIED — path/method updated, description preserved |
+| Endpoint removed from code | REMOVED — marked but not deleted (may be intentional) |
+| Existing descriptions/notes | NEVER overwritten |
+| Custom env vars | NEVER overwritten |
+| "Tested: Yes" markers | NEVER overwritten |
+| Coverage bar and table | Recalculated from current Tested columns. Added if missing. |
+
+**Existing projects without Coverage section:** Re-run `init`. It will scan the Tested columns across all endpoint tables, calculate the percentages, and insert the Coverage section after the header. No other content is modified.
 
 ## Command: `create`
 
@@ -35,19 +63,26 @@ Auto-runs `init` if `.api-spec.md` missing.
 
 Ask user via AskUserQuestion: **Multi-Agent (Parallel)** (recommended) or **Single Agent (Sequential)**.
 
-### Parallel Agents
+### Agent Dispatch (Parallel Mode)
 
 Use a **single message with multiple Task tool calls**. Each `general-purpose` agent gets:
 1. Endpoint details + **exact source file path + line number**
 2. **Deep Endpoint Analysis instructions** (see below) — agent MUST trace full source before writing YAML
-3. Expression syntax from `reference.md`
-4. Test categories: SETUP → HAPPY PATH (all variations) → PARAM VALIDATION → BUSINESS RULES → AUTH FAILURES → CROSS-PARAM COMBINATIONS → TEARDOWN
+3. Expression syntax and YAML template from `reference.md` (included in prompt)
+4. Test content rules (see below)
 5. Output path: `spec-files/{module}/{METHOD_RESOURCE}.yaml`
-6. Update `.api-spec.md` tested status
-7. **Auth:** NEVER add Authorization headers. Use `auth: none`/`skipAuth: true` for unauthorized tests.
-8. **Minimum 5 tests** per non-trivial endpoint. Fewer requires YAML comment explaining why.
+6. Update `.api-spec.md` tested status for its endpoints
 
-Main agent generates config file after all agents complete.
+Main agent generates config file and **updates the coverage bar and coverage table** in `.api-spec.md` after all agents complete.
+
+### Test Content Rules
+
+These apply to ALL generated tests regardless of execution mode:
+
+- **Test categories (in order):** SETUP → HAPPY PATH (all variations) → PARAM VALIDATION → BUSINESS RULES → AUTH FAILURES → CROSS-PARAM COMBINATIONS → TEARDOWN
+- **Auth:** NEVER add Authorization headers. go-runner handles auth automatically. Use `auth: none` or `skipAuth: true` for unauthorized test scenarios only.
+- **Minimum 5 tests** per non-trivial endpoint. Fewer requires a YAML comment explaining why.
+- **Minimum:** N code branches → N+3 tests.
 
 ## Deep Endpoint Analysis (MANDATORY)
 
