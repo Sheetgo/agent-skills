@@ -1,11 +1,11 @@
 ---
 name: generate-api-tests
-description: Use when creating API tests for any API project (Flask, FastAPI, Express, NestJS, Django, Go) needing YAML integration tests for go-runner
+description: Use when creating API tests for any API project (Flask, FastAPI, Express, NestJS, Django, Go) needing YAML integration tests for go-runner, or generating CI/CD pipelines to run those tests
 ---
 
 # Generate API Tests
 
-Framework-agnostic API test generator. Two commands: `init` (analyze project, create `.api-spec.md`) and `create` (generate YAML tests in `spec-files/`).
+Framework-agnostic API test generator. Three commands: `init` (analyze project, create `.api-spec.md`), `create` (generate YAML tests in `spec-files/`), and `ci` (generate CI/CD pipeline to deploy a temp instance and run tests).
 
 **Core principle:** Tests generated from route signatures alone miss most bugs. Deep source tracing — through handlers, controllers, services, and exception classes — ensures every code branch has a test.
 
@@ -84,6 +84,67 @@ These apply to ALL generated tests regardless of execution mode:
 - **Minimum 5 tests** per non-trivial endpoint. Fewer requires a YAML comment explaining why.
 - **Minimum:** N code branches → N+3 tests.
 
+## Command: `ci`
+
+Generates a CI/CD pipeline file to deploy a temporary instance and run go-runner tests.
+
+```bash
+/generate-api-tests ci           # Interactive (detects cloud from deploy files)
+/generate-api-tests ci gcp       # Explicit cloud provider
+```
+
+Auto-runs `init` if `.api-spec.md` missing.
+
+### Step 1: Detect Cloud Provider
+
+Scan project root for deployment files:
+
+| File Pattern | Cloud |
+|-------------|-------|
+| `cloudbuild*.yaml` | GCP Cloud Build |
+| `buildspec*.yml` | AWS CodeBuild (future) |
+| `azure-pipelines*.yml` | Azure DevOps (future) |
+| `.github/workflows/*.yml` | GitHub Actions (future) |
+
+If multiple found or none found, ask user via AskUserQuestion.
+Currently supported: **GCP only**. For other clouds, inform user and stop.
+
+### Step 2: Analyze Existing Deploy File
+
+Read the deploy YAML and extract:
+- **Build steps**: Docker image name, build args, registry URL
+- **Deploy config**: service name, region, port, memory, CPU, max instances, concurrency, timeout
+- **Networking**: VPC connector, egress settings
+- **Security**: service account, CMEK key, auth settings
+- **Environment**: env vars, env files
+- **Substitution variables**: all `${_VAR}` patterns (these become the pipeline's substitutions)
+
+### Step 3: Ask Gap-Filling Questions
+
+Ask via AskUserQuestion (one at a time):
+1. Which deploy step/service to use as base? (if multiple services in deploy file)
+2. go-runner Docker image URL? (e.g., `gcr.io/project/go-runner-image`)
+3. Worker pool name? (or "none" for default)
+4. Pipeline timeout? (default: 3600s)
+
+### Step 4: Generate Pipeline File
+
+Output: `cloudbuild-{project-name}-api-testing.yaml` in project root.
+
+Use the GCP Cloud Build Testing Pipeline Template from `reference.md` as the base. Fill in all `{{placeholders}}` from the analyzed deploy file and user answers.
+
+Pipeline structure (GCP):
+1. **Build image** — same Docker build but with temp name `tmp-{service}-$BUILD_ID`
+2. **Push image** — push to same registry
+3. **Deploy temp instance** — `gcloud run deploy tmp-{service}-${_DEPLOYMENT_ENV}` with same config, captures URL to `/workspace/service_url.txt`
+4. **Warmup** — health check loop (curl every 5s, timeout 5min, accepts 200/401/403/404)
+5. **Run tests** — `BASE_URL=$$SERVICE_URL go-runner run --config ./spec-files/{project}-config.yaml --verbose`
+6. **Cleanup** — `gcloud run services delete tmp-{service}-${_DEPLOYMENT_ENV} --quiet` with `waitFor` referencing test step
+
+Include `timeout` and `options.pool` if worker pool specified.
+
+**Important:** On GCP Cloud Build, if a step fails, subsequent steps don't run by default. The cleanup step uses `waitFor` to reference the test step ID, but cleanup only runs if the test step completes (pass or fail exit). For guaranteed cleanup, note in a YAML comment that users may want a separate cleanup trigger or use `--allow-failure` patterns.
+
 ## Deep Endpoint Analysis (MANDATORY)
 
 **Do NOT generate tests from route signature alone.** Read and trace full source code first.
@@ -138,6 +199,8 @@ POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
 | `create` | Interactive endpoint selection |
 | `create POST /path` | Specific endpoint |
 | `create module` | All endpoints in module |
+| `ci` | Generate CI/CD pipeline for running tests |
+| `ci gcp` | GCP Cloud Build pipeline |
 
 ## Common Mistakes
 
@@ -155,3 +218,5 @@ POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
 | Skipping param combinations | Test each required param missing individually + cross-param interactions |
 | Ignoring business rules | Quota checks, state validations, feature flags = tests |
 | Not documenting untestable paths | Comment out with `# NOTE:` explaining setup needed |
+| Forgetting cleanup step in CI | Always include cleanup step. Note: on GCP, if tests fail the cleanup step won't run by default — document this limitation |
+| Hardcoding project-specific values in CI | Use substitution variables `${_VAR}` for all project-specific config |
