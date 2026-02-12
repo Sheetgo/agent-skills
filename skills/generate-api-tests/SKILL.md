@@ -1,9 +1,11 @@
 ---
 name: generate-api-tests
-description: Use when creating API tests for any API project (Flask, FastAPI, Express, NestJS, Django, Go) needing YAML integration tests for go-runner, or generating CI/CD pipelines to run those tests
+description: Use when any API project (Flask, FastAPI, Express, NestJS, Django, Go) needs YAML integration tests for go-runner, when test coverage is shallow or missing, or when generating CI/CD pipelines to deploy a temp instance and run those tests
 ---
 
 # Generate API Tests
+
+## Overview
 
 Framework-agnostic API test generator. Three commands: `init` (analyze project, create `.api-spec.md`), `create` (generate YAML tests in `spec-files/`), and `ci` (generate CI/CD pipeline to deploy a temp instance and run tests).
 
@@ -11,7 +13,7 @@ Framework-agnostic API test generator. Three commands: `init` (analyze project, 
 
 **Test Runner:** go-runner (Go-based, expr-lang). See project CLAUDE.md for go-runner docs.
 
-**Reference file:** `reference.md` in this skill directory contains expression syntax, templates, and format examples. When dispatching parallel agents, **read `reference.md` first and include the relevant sections** (expression syntax table, YAML template) in each agent's prompt — subagents cannot access it automatically.
+**Reference file:** `reference.md` in this skill directory contains expression syntax, templates, format examples, output structure, naming conventions, deep endpoint analysis checklist, and CI pipeline generation details. When dispatching parallel agents, **read `reference.md` first and include the relevant sections** (expression syntax table, YAML template, naming rules, deep endpoint analysis checklist) in each agent's prompt — subagents cannot access it automatically.
 
 ## When to Use
 
@@ -19,6 +21,7 @@ Framework-agnostic API test generator. Three commands: `init` (analyze project, 
 - Project uses Flask, FastAPI, Django, Express, NestJS, or Go
 - Existing test coverage is shallow (only happy path) or missing entirely
 - New endpoints added and need test generation
+- Need CI/CD pipeline to deploy a temp instance and run API tests
 
 **When NOT to use:** Unit tests, non-HTTP services, projects not using go-runner as test runner.
 
@@ -39,50 +42,45 @@ Framework-agnostic API test generator. Three commands: `init` (analyze project, 
 
 | Action | Behavior |
 |--------|----------|
-| New endpoint found | ADDED — appended to module table |
-| Endpoint signature changed | MODIFIED — path/method updated, description preserved |
-| Endpoint removed from code | REMOVED — marked but not deleted (may be intentional) |
-| Existing descriptions/notes | NEVER overwritten |
-| Custom env vars | NEVER overwritten |
-| "Tested: Yes" markers | NEVER overwritten |
-| Coverage bar and table | Recalculated from current Tested columns. Added if missing. |
-
-**Existing projects without Coverage section:** Re-run `init`. It will scan the Tested columns across all endpoint tables, calculate the percentages, and insert the Coverage section after the header. No other content is modified.
+| New / changed / removed endpoints | ADDED, MODIFIED (preserves descriptions), or REMOVED (marked, not deleted) |
+| Existing descriptions, env vars, "Tested: Yes" | NEVER overwritten |
+| Coverage bar and table | Recalculated from Tested columns. Added after header if missing. |
 
 ## Command: `create`
 
 ```bash
 /generate-api-tests create              # Interactive selection
 /generate-api-tests create POST /path   # Specific endpoint
-/generate-api-tests create module       # All endpoints in module
+/generate-api-tests create module       # All endpoints in module (matches ### heading in .api-spec.md)
 ```
 
 Auto-runs `init` if `.api-spec.md` missing.
 
 ### Execution Mode
 
-Ask user via AskUserQuestion: **Multi-Agent (Parallel)** (recommended) or **Single Agent (Sequential)**.
+Ask user via AskUserQuestion: **Multi-Agent (Parallel)** (recommended) or **Single Agent (Sequential)**. Sequential mode: main agent generates all test files one at a time following the same rules below, then updates `.api-spec.md` tested status, coverage bar/table, and `spec-files/.env.example`.
 
 ### Agent Dispatch (Parallel Mode)
 
 Use a **single message with multiple Task tool calls**. Each `general-purpose` agent gets:
 1. Endpoint details + **exact source file path + line number**
-2. **Deep Endpoint Analysis instructions** (see below) — agent MUST trace full source before writing YAML
-3. Expression syntax and YAML template from `reference.md` (included in prompt)
+2. **Deep Endpoint Analysis** — tracing checklist from `reference.md` + test ordering from this skill's section below. Agent MUST trace full source before writing YAML
+3. Expression syntax, YAML template, and naming conventions from `reference.md` (included in prompt)
 4. Test content rules (see below)
 5. Output path: `spec-files/{module}/{METHOD_RESOURCE}.yaml`
-6. Update `.api-spec.md` tested status for its endpoints
 
-Main agent generates config file and **updates the coverage bar and coverage table** in `.api-spec.md` after all agents complete.
+Subagents write ONLY their YAML test files — do NOT let subagents update `.api-spec.md` (concurrent writes will race and lose data).
+
+Main agent after all agents complete: generates config file, **marks tested status** for all generated endpoints, **updates the coverage bar and coverage table**, and **adds any new env vars** to `spec-files/.env.example`.
 
 ### Test Content Rules
 
 These apply to ALL generated tests regardless of execution mode:
 
-- **Test categories (in order):** SETUP → HAPPY PATH (all variations) → PARAM VALIDATION → BUSINESS RULES → AUTH FAILURES → CROSS-PARAM COMBINATIONS → TEARDOWN
+- **Test categories and ordering:** Follow Deep Endpoint Analysis section below.
 - **Auth:** NEVER add Authorization headers. go-runner handles auth automatically. Use `auth: none` or `skipAuth: true` for unauthorized test scenarios only.
 - **Minimum 5 tests** per non-trivial endpoint. Fewer requires a YAML comment explaining why.
-- **Minimum:** N code branches → N+3 tests.
+- **Env vars:** When tests reference `${{ env.VAR }}$`, ensure the var is in `spec-files/.env.example` with a description.
 
 ## Command: `ci`
 
@@ -95,73 +93,15 @@ Generates a CI/CD pipeline file to deploy a temporary instance and run go-runner
 
 Auto-runs `init` if `.api-spec.md` missing.
 
-### Step 1: Detect Cloud Provider
+**Steps:** Detect cloud provider → Analyze existing deploy file → Ask gap-filling questions → Generate pipeline file. Currently supported: **GCP only**.
 
-Scan project root for deployment files:
-
-| File Pattern | Cloud |
-|-------------|-------|
-| `cloudbuild*.yaml` | GCP Cloud Build |
-| `buildspec*.yml` | AWS CodeBuild (future) |
-| `azure-pipelines*.yml` | Azure DevOps (future) |
-| `.github/workflows/*.yml` | GitHub Actions (future) |
-
-If multiple found or none found, ask user via AskUserQuestion.
-Currently supported: **GCP only**. For other clouds, inform user and stop.
-
-### Step 2: Analyze Existing Deploy File
-
-Read the deploy YAML and extract:
-- **Build steps**: Docker image name, build args, registry URL
-- **Deploy config**: service name, region, port, memory, CPU, max instances, concurrency, timeout
-- **Networking**: VPC connector, egress settings
-- **Security**: service account, CMEK key, auth settings
-- **Environment**: env vars, env files
-- **Substitution variables**: all `${_VAR}` patterns (these become the pipeline's substitutions)
-
-### Step 3: Ask Gap-Filling Questions
-
-Ask via AskUserQuestion (one at a time):
-1. Which deploy step/service to use as base? (if multiple services in deploy file)
-2. go-runner Docker image URL? (e.g., `gcr.io/project/go-runner-image`)
-3. Worker pool name? (or "none" for default)
-4. Pipeline timeout? (default: 3600s)
-
-### Step 4: Generate Pipeline File
-
-Output: `cloudbuild-{project-name}-api-testing.yaml` in project root.
-
-Use the GCP Cloud Build Testing Pipeline Template from `reference.md` as the base. Fill in all `{{placeholders}}` from the analyzed deploy file and user answers.
-
-Pipeline structure (GCP):
-1. **Build image** — same Docker build but with temp name `tmp-{service}-$BUILD_ID`
-2. **Push image** — push to same registry
-3. **Deploy temp instance** — `gcloud run deploy tmp-{service}-${_DEPLOYMENT_ENV}` with same config, captures URL to `/workspace/service_url.txt`
-4. **Warmup** — health check loop (curl every 5s, timeout 5min, accepts 200/401/403/404)
-5. **Run tests** — `BASE_URL=$$SERVICE_URL go-runner run --config ./spec-files/{project}-config.yaml --verbose`
-6. **Cleanup** — `gcloud run services delete tmp-{service}-${_DEPLOYMENT_ENV} --quiet` with `waitFor` referencing test step
-
-Include `timeout` and `options.pool` if worker pool specified.
-
-**Important:** On GCP Cloud Build, if a step fails, subsequent steps don't run by default. The cleanup step uses `waitFor` to reference the test step ID, but cleanup only runs if the test step completes (pass or fail exit). For guaranteed cleanup, note in a YAML comment that users may want a separate cleanup trigger or use `--allow-failure` patterns.
+See `reference.md` → "CI Pipeline Generation Details" for the full step-by-step: file detection patterns, deploy file extraction checklist, gap-filling questions, and pipeline structure.
 
 ## Deep Endpoint Analysis (MANDATORY)
 
-**Do NOT generate tests from route signature alone.** Read and trace full source code first.
+**Do NOT generate tests from route signature alone.** Trace full source code first: handler → controller/service → exceptions → response variations. See `reference.md` → "Deep Endpoint Analysis Checklist" for the detailed tracing steps.
 
-### Step 1: Read View/Route Handler
-Identify: all params (path, query, body, headers), required vs optional, early returns, controller calls, data transformations.
-
-### Step 2: Read Controller/Service Layer
-Follow every function call. For each: trace `if/else` branches (each = test case), `try/except` blocks (each exception = test case), validation logic, authorization checks, business rules (quotas, limits, flags), database lookups that can fail.
-
-### Step 3: Map All Exceptions
-Read imports, find every exception class. For each: what triggers it, what response it produces. Create at least one test per exception.
-
-### Step 4: Map Response Variations
-Document every distinct response shape: different success responses, different error codes, edge cases (empty lists, null fields).
-
-### Step 5: Generate Exhaustive Tests
+After tracing, generate tests in this order:
 
 1. **SETUP** — Create all required fixtures
 2. **HAPPY PATH (all variations)** — One test per distinct success branch. Test optional params that trigger different code paths.
@@ -175,23 +115,9 @@ Document every distinct response shape: different success responses, different e
 
 **Commented-out tests:** When a scenario needs special setup (second user, quota state), include commented out with `# NOTE:` explaining requirements.
 
-## Output Structure
-
-```
-spec-files/
-  {{module}}/{{METHOD}}_{{RESOURCE}}.yaml
-  {{project-name}}-config.yaml
-```
-
-POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
-
-## Naming
-
-- **File:** `METHOD_RESOURCE.yaml` (uppercase, underscores). POST=CREATE, PUT=UPDATE, PATCH=PATCH, DELETE=DELETE.
-- **Test name:** `ENDPOINT_NAME - SCENARIO`
-- **Scenarios:** SETUP, HAPPY PATH, MISSING X, EMPTY X, INVALID TYPE X, RESOURCE NOT FOUND, QUOTA EXCEEDED, UNAUTHORIZED, FORBIDDEN WRONG OWNER, CONFLICTING PARAMS, TEARDOWN
-
 ## Quick Reference
+
+**Command progression:** `init` → `create` → `ci`. The `create` and `ci` commands auto-run `init` if `.api-spec.md` is missing.
 
 | Command | Action |
 |---------|--------|
@@ -204,12 +130,11 @@ POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
 
 ## Common Mistakes
 
+For expression syntax errors (`response.status()`, `process.env`, `!== undefined`), see the Expression Syntax table in `reference.md`.
+
 | Mistake | Fix |
 |---------|-----|
 | Adding Authorization headers | go-runner handles auth. Use `auth: none` for unauth tests |
-| Using `response.status()` | `response.Status` (Go struct, capitalized) |
-| Using `process.env.VAR` | `env.VAR` (go-runner syntax) |
-| Using `!== undefined` | `!= nil` or `!= ""` (expr-lang) |
 | Hardcoding test data | Use `${{ env.VAR }}$` |
 | Missing teardown | Always clean up created resources |
 | Expecting HTTP error codes | Many APIs return 200; check response body |
@@ -218,5 +143,5 @@ POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
 | Skipping param combinations | Test each required param missing individually + cross-param interactions |
 | Ignoring business rules | Quota checks, state validations, feature flags = tests |
 | Not documenting untestable paths | Comment out with `# NOTE:` explaining setup needed |
-| Forgetting cleanup step in CI | Always include cleanup step. Note: on GCP, if tests fail the cleanup step won't run by default — document this limitation |
+| Forgetting cleanup step in CI | Always include cleanup step. GCP won't run it if tests fail — document this |
 | Hardcoding project-specific values in CI | Use substitution variables `${_VAR}` for all project-specific config |

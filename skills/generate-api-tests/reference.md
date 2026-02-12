@@ -148,6 +148,39 @@ Test Runner: go-runner
 - 75%: `███████████████░░░░░` **75%**
 - 100%: `████████████████████` **100%**
 
+
+## Output Structure
+
+```
+spec-files/
+  {{module}}/{{METHOD}}_{{RESOURCE}}.yaml
+  {{project-name}}-config.yaml
+```
+
+POST /connections → `spec-files/connection/CREATE_CONNECTION.yaml`
+
+## Naming Conventions
+
+- **File:** `METHOD_RESOURCE.yaml` (uppercase, underscores). GET=GET, POST=CREATE, PUT=UPDATE, PATCH=PATCH, DELETE=DELETE.
+- **Test name:** `ENDPOINT_NAME - SCENARIO`
+- **Scenarios:** SETUP, HAPPY PATH, MISSING X, EMPTY X, INVALID TYPE X, RESOURCE NOT FOUND, QUOTA EXCEEDED, UNAUTHORIZED, FORBIDDEN WRONG OWNER, CONFLICTING PARAMS, TEARDOWN
+
+## Deep Endpoint Analysis Checklist
+
+Trace the full code path before writing any test YAML.
+
+### Step 1: Read View/Route Handler
+Identify: all params (path, query, body, headers), required vs optional, early returns, controller calls, data transformations.
+
+### Step 2: Read Controller/Service Layer
+Follow every function call. For each: trace `if/else` branches (each = test case), `try/except` blocks (each exception = test case), validation logic, authorization checks, business rules (quotas, limits, flags), database lookups that can fail.
+
+### Step 3: Map All Exceptions
+Read imports, find every exception class. For each: what triggers it, what response it produces. Create at least one test per exception.
+
+### Step 4: Map Response Variations
+Document every distinct response shape: different success responses, different error codes, edge cases (empty lists, null fields).
+
 ## YAML Test Template
 
 Each test file MUST start with a header documenting analyzed code paths:
@@ -291,6 +324,58 @@ Each test file MUST start with a header documenting analyzed code paths:
     - name: Cleanup successful
       assert: ${{ response.Status == 200 }}$
 ```
+
+## CI Pipeline Generation Details
+
+### Step 1: Detect Cloud Provider
+
+Scan project root for deployment files:
+
+| File Pattern | Cloud |
+|-------------|-------|
+| `cloudbuild*.yaml` | GCP Cloud Build |
+| `buildspec*.yml` | AWS CodeBuild (future) |
+| `azure-pipelines*.yml` | Azure DevOps (future) |
+| `.github/workflows/*.yml` | GitHub Actions (future) |
+
+If multiple found or none found, ask user via AskUserQuestion.
+Currently supported: **GCP only**. For other clouds, inform user and stop.
+
+### Step 2: Analyze Existing Deploy File
+
+Read the deploy YAML and extract:
+- **Build steps**: Docker image name, build args, registry URL
+- **Deploy config**: service name, region, port, memory, CPU, max instances, concurrency, timeout
+- **Networking**: VPC connector, egress settings
+- **Security**: service account, CMEK key, auth settings
+- **Environment**: env vars, env files
+- **Substitution variables**: all `${_VAR}` patterns (these become the pipeline's substitutions)
+
+### Step 3: Ask Gap-Filling Questions
+
+Ask via AskUserQuestion (one at a time):
+1. Which deploy step/service to use as base? (if multiple services in deploy file)
+2. go-runner Docker image URL? (e.g., `gcr.io/project/go-runner-image`)
+3. Worker pool name? (or "none" for default)
+4. Pipeline timeout? (default: 3600s)
+
+### Step 4: Generate Pipeline File
+
+Output: `cloudbuild-{project-name}-api-testing.yaml` in project root.
+
+Use the GCP Cloud Build Testing Pipeline Template below as the base. Fill in all `{{placeholders}}` from the analyzed deploy file and user answers.
+
+Pipeline structure (GCP):
+1. **Build image** — same Docker build but with temp name `tmp-{service}-$BUILD_ID`
+2. **Push image** — push to same registry
+3. **Deploy temp instance** — `gcloud run deploy tmp-{service}-${_DEPLOYMENT_ENV}` with same config, captures URL to `/workspace/service_url.txt`
+4. **Warmup** — health check loop (curl every 5s, timeout 5min, accepts 200/401/403/404)
+5. **Run tests** — `BASE_URL=$$SERVICE_URL go-runner run --config ./spec-files/{project}-config.yaml --verbose`
+6. **Cleanup** — `gcloud run services delete tmp-{service}-${_DEPLOYMENT_ENV} --quiet` with `waitFor` referencing test step
+
+Include `timeout` and `options.pool` if worker pool specified.
+
+**Important:** On GCP Cloud Build, if a step fails, subsequent steps don't run by default. The cleanup step uses `waitFor` to reference the test step ID, but cleanup only runs if the test step completes (pass or fail exit). For guaranteed cleanup, note in a YAML comment that users may want a separate cleanup trigger or use `--allow-failure` patterns.
 
 ## GCP Cloud Build Testing Pipeline Template
 
