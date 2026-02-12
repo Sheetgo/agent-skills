@@ -7,12 +7,14 @@ Collection of AI agent skills and hooks for coding assistants.
 ```
 agent-skills/
 ├── skills/           # Skill definitions (SKILL.md files)
+│   ├── generate-api-tests/
 │   ├── git-conventions/
 │   ├── plan-hardening/
 │   ├── squash-commits/
 │   └── undo-squash/
 ├── commands/         # Command stubs for explicit invocation
 │   ├── cleanup-squash.md
+│   ├── generate-api-tests.md
 │   ├── plan-hardening.md
 │   ├── squash-commits.md
 │   ├── start-work.md
@@ -27,6 +29,7 @@ agent-skills/
 
 | Skill | Description |
 |-------|-------------|
+| `generate-api-tests` | Framework-agnostic API test generator. Creates YAML integration tests for go-runner and CI/CD pipelines. |
 | `git-conventions` | Branch naming and commit format conventions. Enforces `type: Description` format via hook. |
 | `plan-hardening` | Systematically validate draft designs until convergence (0 must-fix, 0 should-fix). |
 | `squash-commits` | Consolidate commits into cohesive logical groups. Use when ready to push. |
@@ -37,6 +40,7 @@ agent-skills/
 | Command | Description |
 |---------|-------------|
 | `/start-work` | Initialize a feature or fix branch. Invokes git-conventions skill. |
+| `/generate-api-tests` | Generate YAML integration tests for go-runner. Works with Flask, FastAPI, Express, NestJS, Django, Go. |
 | `/cleanup-squash` | Remove squash backup tags and bundle files. |
 | `/squash-commits` | Consolidate commits before push. |
 | `/undo-squash` | Restore pre-squash state. |
