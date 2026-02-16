@@ -9,19 +9,26 @@ agent-skills/
 ├── skills/           # Skill definitions (SKILL.md files)
 │   ├── generate-api-tests/
 │   ├── git-conventions/
+│   ├── implementation-audit/
 │   ├── plan-hardening/
+│   ├── session-notes/
 │   ├── squash-commits/
 │   └── undo-squash/
 ├── commands/         # Command stubs for explicit invocation
 │   ├── cleanup-squash.md
 │   ├── generate-api-tests.md
+│   ├── implementation-audit.md
 │   ├── plan-hardening.md
+│   ├── session-handoff.md
+│   ├── session-persist.md
+│   ├── session-status.md
 │   ├── squash-commits.md
 │   ├── start-work.md
 │   └── undo-squash.md
 ├── hooks/            # Safety and validation hooks
 │   ├── dangerous-command-blocker.py
-│   └── git-conventions.py
+│   ├── git-conventions.py
+│   └── session-checkpoint.py
 └── docs/plans/       # Design documents
 ```
 
@@ -33,6 +40,8 @@ agent-skills/
 | `git-conventions` | Branch naming and commit format conventions. Enforces `type: Description` format via hook. |
 | `plan-hardening` | Systematically validate draft designs until convergence (0 must-fix, 0 should-fix). |
 | `squash-commits` | Consolidate commits into cohesive logical groups. Use when ready to push. |
+| `session-notes` | Session context management — status debrief, persist findings, or generate handoff prompt. |
+| `implementation-audit` | Dispatch parallel reviewers to validate implementation against the plan. |
 | `undo-squash` | Restore commits to pre-squash state. Use when grouping was wrong. |
 
 ## Commands
@@ -44,6 +53,10 @@ agent-skills/
 | `/cleanup-squash` | Remove squash backup tags and bundle files. |
 | `/squash-commits` | Consolidate commits before push. |
 | `/undo-squash` | Restore pre-squash state. |
+| `/session-status` | Read-only session debrief. Shows catch-up summary without writing files. |
+| `/session-persist` | Persist session findings to plan files. Captures discoveries and commits. |
+| `/session-handoff` | Generate a resumption prompt for starting a fresh session. |
+| `/implementation-audit` | Audit implementation against the plan. Dispatches parallel reviewers. |
 | `/plan-hardening` | Validate a design document. |
 
 ## Hooks
@@ -52,6 +65,7 @@ agent-skills/
 |------|-------------|
 | `dangerous-command-blocker.py` | Blocks catastrophic commands (`rm -rf`), protects critical paths. |
 | `git-conventions.py` | Validates commit messages follow `type: Description` format. |
+| `session-checkpoint.py` | Intercepts `finishing-a-development-branch` to force documentation update. |
 
 ## Dependencies
 
@@ -120,6 +134,15 @@ Add the hook configuration to `~/.claude/settings.json`:
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/git-conventions.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/session-checkpoint.py"
           }
         ]
       }
