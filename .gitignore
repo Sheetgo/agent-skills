@@ -12,3 +12,6 @@ creds.json
 
 # Claude session state (not skills)
 **/.claude/sessions/
+
+# Local analysis (not for remote)
+.local/

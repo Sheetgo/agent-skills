@@ -1,6 +1,5 @@
 ---
-name: session-notes
-description: "Session context management — status debrief, persist findings to plan files, or generate handoff prompt. Use via /session-status, /session-persist, or /session-handoff."
+description: "Internal skill — not invoked directly. Use /session-status, /session-persist, or /session-handoff instead."
 ---
 
 # Session Notes
