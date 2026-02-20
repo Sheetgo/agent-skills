@@ -585,5 +585,5 @@ After squash completes, inform user:
 🎉 Squash complete! Backups preserved for undo.
 
 To undo this squash:  /undo-squash
-To clean up backups:  /cleanup-squash
+To clean up backups:  /squash-cleanup
 ```

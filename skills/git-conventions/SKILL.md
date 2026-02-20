@@ -114,6 +114,6 @@ git checkout -b "$BRANCH_NAME" "$BASE"
 | Command | Purpose |
 |---------|---------|
 | `/start-work` | Branch creation wizard (this skill) |
-| `/cleanup-squash` | Remove squash backup tags |
+| `/squash-cleanup` | Remove squash backup tags |
 | `/squash-commits` | Consolidate commits before push |
 | `/undo-squash` | Restore pre-squash state |

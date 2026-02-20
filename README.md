@@ -15,7 +15,7 @@ agent-skills/
 │   ├── squash-commits/
 │   └── undo-squash/
 ├── commands/         # Command stubs for explicit invocation
-│   ├── cleanup-squash.md
+│   ├── commit.md
 │   ├── generate-api-tests.md
 │   ├── implementation-audit.md
 │   ├── plan-hardening.md
@@ -23,6 +23,7 @@ agent-skills/
 │   ├── session-persist.md
 │   ├── session-status.md
 │   ├── squash-commits.md
+│   ├── squash-cleanup.md
 │   ├── start-work.md
 │   └── undo-squash.md
 ├── hooks/            # Safety and validation hooks
@@ -48,9 +49,10 @@ agent-skills/
 
 | Command | Description |
 |---------|-------------|
+| `/commit` | Create a git commit. Alias for `commit-commands:commit` plugin skill. |
 | `/start-work` | Initialize a feature or fix branch. Invokes git-conventions skill. |
 | `/generate-api-tests` | Generate YAML integration tests for go-runner. Works with Flask, FastAPI, Express, NestJS, Django, Go. |
-| `/cleanup-squash` | Remove squash backup tags and bundle files. |
+| `/squash-cleanup` | Remove squash backup tags and bundle files. |
 | `/squash-commits` | Consolidate commits before push. |
 | `/undo-squash` | Restore pre-squash state. |
 | `/session-status` | Read-only session debrief. Shows catch-up summary without writing files. |
@@ -155,8 +157,23 @@ If you already have content in `settings.json`, merge the `hooks` object with ex
 
 **Restart Claude Code** for hooks to take effect.
 
-## Adding New Skills
+## Adding New Components
 
-1. Create `skills/{skill-name}/SKILL.md`
-2. Create `commands/{skill-name}.md` (optional, for explicit invocation)
-3. Re-run symlink commands above
+1. **New skill**: Create `skills/{name}/SKILL.md` with YAML frontmatter
+2. **New command**: Create `commands/{name}.md` pointing to the skill
+3. **New hook**: Create `hooks/{name}.py`, then register in `~/.claude/settings.json`
+4. Re-run symlink commands above
+
+### Aliasing Plugin Skills
+
+Commands can also create short `/name` aliases for verbose plugin skill names. For example, `/commit` is an alias for the `commit-commands:commit` plugin skill:
+
+```markdown
+---
+description: Create a git commit
+---
+
+Invoke the commit-commands:commit skill and follow it exactly.
+```
+
+This avoids typing `/commit-commands:commit` every time. Any plugin skill can be aliased this way — just create a command stub that references the fully-qualified skill name.

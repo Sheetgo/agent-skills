@@ -28,12 +28,28 @@ docs/plans/                # Design documents (YYYY-MM-DD-{name}-design.md)
 ### Skills vs Commands vs Hooks
 
 - **Skills** (`SKILL.md`): Full behavioral specifications with YAML frontmatter (`name`, `description`). They define *how* Claude should behave — wizard flows, safety checks, verification steps. Skills are the source of truth.
-- **Commands** (`.md`): Thin stubs that point to a skill and say "follow it exactly." They exist only to provide `/command-name` invocation. Never duplicate skill logic in commands.
+- **Commands** (`.md`): Thin stubs that point to a skill and say "follow it exactly." They exist only to provide `/command-name` invocation. Never duplicate skill logic in commands. Commands can also alias external plugin skills (e.g., `commit.md` aliases `commit-commands:commit` to provide `/commit`).
 - **Hooks** (`.py`): Python scripts that run as `PreToolUse` handlers on `Bash` tool calls. They read tool input JSON from stdin and either `sys.exit(0)` (allow), `sys.exit(2)` (block), or print a JSON `permissionDecision` object to deny with a reason.
 
 ### Hook Protocol
 
 Hooks receive JSON on stdin with `tool_name` and `tool_input.command`. To block a command, exit with code 2 and print to stderr. To deny with feedback (so the agent can self-correct), print a JSON object with `hookSpecificOutput.permissionDecision: "deny"` and exit 0. See `git-conventions.py` for the deny-with-feedback pattern.
+
+### Smart Compose Hook
+
+The `smart-compose` hook (`hooks/smart-compose.py`) auto-approves composed Bash commands where every sub-command individually matches an existing allow rule. It splits on `&&`, `||`, `;` outside quotes, checks each part against prefix/glob/exact rules and builtins, and passes through to the normal permission system if any part is unrecognized.
+
+- Installed to: `~/.claude/hooks/smart-compose.py` (symlink)
+- Registered in: `~/.claude/settings.json` under `hooks.PreToolUse`
+- **Must be last in the array** — if other deny-capable hooks exist (e.g., `dangerous-command-blocker`, `git-conventions`), they must appear earlier so they can block before smart-compose approves
+- Reads allow rules from: project `.claude/settings.local.json` and `.claude/settings.json` + global `~/.claude/settings.local.json` and `~/.claude/settings.json`
+
+### Command Composition
+
+- Prefer separate parallel Bash calls for independent commands
+- Use `&&` only for genuinely dependent operations (cd+command, git add+commit)
+- Use Glob instead of `ls`, Grep instead of `grep`, Read instead of `cat`
+- The `smart-compose` hook auto-approves composed commands where every sub-command is individually allowed
 
 ### Session State
 
