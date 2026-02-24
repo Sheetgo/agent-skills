@@ -9,13 +9,25 @@ import sys
 import os
 from pathlib import Path
 from fnmatch import fnmatch
+import re
 
 DEBUG = os.environ.get("SMART_COMPOSE_DEBUG") == "1"
 
-TRUSTED_BUILTINS = frozenset({"cd", "echo", "printf", "true", "false", "test", "[", "[["})
+TRUSTED_BUILTINS = frozenset({
+    "cd", "echo", "printf", "true", "false", "test", "[", "[[",
+    # v2: coreutils
+    "cp", "mv", "mkdir", "touch",
+    "cat", "head", "tail", "wc", "less",
+    "awk", "sed", "grep", "sort", "uniq", "tee",
+    "basename", "dirname", "realpath",
+    "date", "sleep",
+})
 
 MAX_COMMAND_SIZE = 65536    # 64KB
 MAX_SETTINGS_SIZE = 1048576  # 1MB
+MAX_EXPANSION_DEPTH = 3
+
+_VAR_ASSIGN_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
 
 
 def _debug(msg):
@@ -152,6 +164,187 @@ def has_unquoted_expansion(text):
     return False
 
 
+def _find_matching_close(text, start, open_char, close_char):
+    """Find matching close character, respecting quotes and nesting.
+    start is the position of the opening character.
+    Returns position of closing character, or -1 if not found.
+    """
+    depth = 1
+    i = start + 1
+    in_single = False
+    in_double = False
+
+    while i < len(text):
+        c = text[i]
+
+        if in_single:
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+
+        if in_double:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+
+        if c == "\\":
+            i += 2
+            continue
+
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+
+        if c == open_char:
+            depth += 1
+        elif c == close_char:
+            depth -= 1
+            if depth == 0:
+                return i
+
+        i += 1
+
+    return -1
+
+
+def extract_expansions(text):
+    """Extract unquoted expansions from text.
+    Returns list of (type, content) where type is "cmd" or "var".
+    """
+    results = []
+    outside = _outside_quote_positions(text)
+    i = 0
+
+    while i < len(text):
+        if i not in outside:
+            i += 1
+            continue
+
+        c = text[i]
+
+        if c == "$" and i + 1 < len(text) and (i + 1) in outside:
+            next_c = text[i + 1]
+            if next_c == "(":
+                end = _find_matching_close(text, i + 1, "(", ")")
+                if end != -1:
+                    results.append(("cmd", text[i + 2:end]))
+                    i = end + 1
+                    continue
+            elif next_c == "{":
+                end = _find_matching_close(text, i + 1, "{", "}")
+                if end != -1:
+                    results.append(("var", text[i + 2:end]))
+                    i = end + 1
+                    continue
+
+        if c == "`":
+            j = i + 1
+            found = False
+            while j < len(text):
+                if j in outside and text[j] == "`":
+                    results.append(("cmd", text[i + 1:j]))
+                    i = j + 1
+                    found = True
+                    break
+                j += 1
+            if found:
+                continue
+            i += 1
+            continue
+
+        if c in ("<", ">") and i + 1 < len(text) and (i + 1) in outside and text[i + 1] == "(":
+            end = _find_matching_close(text, i + 1, "(", ")")
+            if end != -1:
+                results.append(("cmd", text[i + 2:end]))
+                i = end + 1
+                continue
+
+        i += 1
+
+    return results
+
+
+def check_expansion(text, rules, depth=0):
+    """Check if all unquoted expansions in text contain allowed commands.
+    Returns True if safe, False if any expansion contains an unrecognized command.
+    """
+    if depth > MAX_EXPANSION_DEPTH:
+        _debug(f"expansion depth limit reached ({depth})")
+        return False
+
+    expansions = extract_expansions(text)
+
+    for exp_type, content in expansions:
+        if exp_type == "var":
+            continue  # ${VAR} is safe — no command execution
+
+        # Command expansion — split inner command on operators and check each part
+        inner_parts = split_on_operators(content)
+
+        for part in inner_parts:
+            stripped = part.strip()
+            if not stripped:
+                _debug(f"expansion: empty inner sub-command")
+                return False
+
+            # Check against allow rules
+            if matches_any_rule(stripped, rules):
+                continue
+
+            # Check if it's a trusted builtin
+            words = stripped.split(None, 1)
+            name = words[0]
+            if name in TRUSTED_BUILTINS:
+                # Recursively check the builtin's args for expansions
+                args = words[1] if len(words) > 1 else ""
+                if not check_expansion(args, rules, depth + 1):
+                    _debug(f'expansion: builtin "{name}" has unsafe nested expansion')
+                    return False
+                continue
+
+            _debug(f'expansion: "{stripped}" not allowed')
+            return False
+
+    return True
+
+
+def is_variable_assignment(subcmd, rules):
+    """Check if sub-command is a variable assignment with safe expansions."""
+    cmd = subcmd.strip()
+    if not cmd:
+        return False
+
+    if not _VAR_ASSIGN_RE.match(cmd):
+        return False
+
+    # Check full text against allow rules (needs = word boundary fix from Task 4)
+    if not matches_any_rule(cmd, rules):
+        _debug(f'var assignment: "{cmd}" not in allow rules')
+        return False
+
+    # Extract value and check for safe expansions
+    eq_pos = cmd.index("=")
+    value = cmd[eq_pos + 1:]
+
+    if not check_expansion(value, rules):
+        _debug(f'var assignment: "{cmd}" value has unsafe expansion')
+        return False
+
+    _debug(f'var assignment: "{cmd}" -> allowed')
+    return True
+
+
 def parse_allow_rules(cwd, home=None):
     """
     Read Bash allow rules from settings files.
@@ -220,7 +413,7 @@ def matches_any_rule(subcmd, rules):
     # Prefix match (word boundary + pipe guard)
     for prefix in rules["prefix"]:
         if cmd.startswith(prefix):
-            if len(cmd) == len(prefix) or cmd[len(prefix)] in (" ", "\t"):
+            if len(cmd) == len(prefix) or cmd[len(prefix)] in (" ", "\t") or prefix.endswith("="):
                 if pipe_blocked:
                     _debug(f'sub-cmd: "{cmd}" -> prefix:"{prefix}" blocked by pipe guard')
                 else:
@@ -242,8 +435,8 @@ def matches_any_rule(subcmd, rules):
     return False
 
 
-def is_auto_allowed_builtin(subcmd):
-    """Check if sub-command is an auto-allowed builtin with no unquoted expansion."""
+def is_auto_allowed_builtin(subcmd, rules=None):
+    """Check if sub-command is an auto-allowed builtin with safe expansions."""
     cmd = subcmd.strip()
     if not cmd:
         return False
@@ -255,9 +448,18 @@ def is_auto_allowed_builtin(subcmd):
         return False
 
     args = parts[1] if len(parts) > 1 else ""
-    if has_unquoted_expansion(args):
-        _debug(f'sub-cmd: "{cmd}" -> builtin "{name}" blocked by expansion guard')
-        return False
+
+    if rules is not None:
+        # v2: recursive expansion checking
+        if not check_expansion(args, rules):
+            _debug(f'sub-cmd: "{cmd}" -> builtin "{name}" blocked by expansion guard')
+            return False
+    else:
+        # Fallback: blanket block on command expansions (no rules available)
+        # ${VAR} is safe (variable expansion), only block $(cmd), `cmd`, <(cmd), >(cmd)
+        if any(t == "cmd" for t, _ in extract_expansions(args)):
+            _debug(f'sub-cmd: "{cmd}" -> builtin "{name}" blocked by expansion guard')
+            return False
 
     _debug(f'sub-cmd: "{cmd}" -> builtin:"{name}"')
     return True
@@ -301,9 +503,21 @@ def check_command(cmd, cwd, home=None):
             _debug("passthrough: empty sub-command")
             return None
 
-        if not is_auto_allowed_builtin(stripped) and not matches_any_rule(stripped, rules):
-            _debug(f'passthrough: unmatched sub-command "{stripped}"')
-            return None
+        # Variable assignments get special handling with expansion checking
+        if _VAR_ASSIGN_RE.match(stripped):
+            if not is_variable_assignment(stripped, rules):
+                _debug(f'passthrough: unsafe variable assignment "{stripped}"')
+                return None
+            continue
+
+        if is_auto_allowed_builtin(stripped, rules):
+            continue
+
+        if matches_any_rule(stripped, rules):
+            continue
+
+        _debug(f'passthrough: unmatched sub-command "{stripped}"')
+        return None
 
     return "allow"
 

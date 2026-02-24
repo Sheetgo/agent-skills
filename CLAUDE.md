@@ -43,6 +43,9 @@ The `smart-compose` hook (`hooks/smart-compose.py`) auto-approves composed Bash 
 - Registered in: `~/.claude/settings.json` under `hooks.PreToolUse`
 - **Must be last in the array** — if other deny-capable hooks exist (e.g., `dangerous-command-blocker`, `git-conventions`), they must appear earlier so they can block before smart-compose approves
 - Reads allow rules from: project `.claude/settings.local.json` and `.claude/settings.json` + global `~/.claude/settings.local.json` and `~/.claude/settings.json`
+- **Variable assignments** (`VAR=value`) are recognized and checked against prefix rules ending with `=` (e.g., `Bash(MERGE_BASE=:*)`)
+- **Command substitution** (`$(cmd)`) inside variable values and builtin arguments is recursively checked — the inner command must also match an allow rule
+- **27 trusted builtins** are auto-allowed in composed commands: `cd`, `echo`, `printf`, `true`, `false`, `test`, `[`, `[[`, `cp`, `mv`, `mkdir`, `touch`, `cat`, `head`, `tail`, `wc`, `less`, `awk`, `sed`, `grep`, `sort`, `uniq`, `tee`, `basename`, `dirname`, `realpath`, `date`, `sleep`
 
 ### Command Composition
 

