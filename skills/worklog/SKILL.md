@@ -33,9 +33,9 @@ A "day" starts at 6AM, not midnight. All date ranges use 06:00:00 as the boundar
 
 ```
 ## Feb 24
-- Implemented quote-aware command parsing
-- Fixed word boundary prefix matching
-- Added smart-compose e2e tests
+- Implemented quote-aware command parsing.
+- Fixed word boundary prefix matching.
+- Added smart-compose e2e tests.
 ```
 
 ## Format Rules
@@ -43,7 +43,7 @@ A "day" starts at 6AM, not midnight. All date ranges use 06:00:00 as the boundar
 - Day headers: `## Mon DD` (e.g., `## Feb 24`) — no weekday names
 - Week headers: `## Week of Mon DD`
 - Whole period: no header, flat bullet list
-- One `- ` bullet per clustered item, 5-7 words max, past tense
+- One `- ` bullet per clustered item, 5-7 words max, past tense, ending with a full stop
 - Plain text only — no bold, no colons, no backticks, no sub-bullets
 
 ## Verb Guidelines
