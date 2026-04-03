@@ -475,8 +475,16 @@ def check_command(cmd, cwd, home=None):
         _debug(f"passthrough: command too large ({len(cmd)} bytes)")
         return None
 
-    # Heredoc bail-out
+    # Heredoc bail-out (with safe-path for git commit heredocs)
     if "<<" in cmd:
+        # Git commit with heredoc body is safe — both git add and git commit are in allow list
+        if re.search(r'git\s+commit\s+.*<<', cmd) and all(
+            re.match(r'\s*(cd\s|git\s+add\s|git\s+commit\s)', part.strip())
+            for part in re.split(r'&&|;', cmd.split('<<')[0])
+            if part.strip()
+        ):
+            _debug("auto-approve: git commit heredoc (all parts are git add/commit/cd)")
+            return "allow"
         _debug("passthrough: heredoc detected")
         return None
 

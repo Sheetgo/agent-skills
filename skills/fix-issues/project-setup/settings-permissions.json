@@ -1,0 +1,29 @@
+{
+  "_comment": "Merge these into your project's .claude/settings.local.json under 'permissions.allow'",
+  "permissions": {
+    "allow": [
+      "Read(.claude/**)",
+      "Grep(.claude/**)",
+      "Read(/tmp/**)",
+      "Grep(/tmp/**)",
+      "Read(~/.claude/skills/**)",
+      "Grep(~/.claude/skills/**)",
+      "Bash(node ~/.claude/skills/fix-issues/*)",
+      "Bash(npx vitest:*)",
+      "Bash(cd client:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(sed:*)",
+      "Bash(cat:*)",
+      "Bash(wc:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

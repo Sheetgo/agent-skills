@@ -17,10 +17,12 @@ A collection of Claude Code skills, commands, and hooks that extend the AI agent
 ## Repository Structure
 
 ```
-skills/{name}/SKILL.md    # Skill definitions (loaded by Claude Code automatically)
-commands/{name}.md         # Command stubs (thin wrappers that invoke skills)
-hooks/{name}.py            # PreToolUse hooks (Python, read JSON from stdin)
-docs/plans/                # Design documents (YYYY-MM-DD-{name}-design.md)
+skills/{name}/SKILL.md              # Skill definitions (loaded by Claude Code automatically)
+skills/{name}/project-setup/        # Project-level files to copy (scripts, templates, hooks)
+skills/{name}/SETUP.md              # Installation guide for project-level dependencies
+commands/{name}.md                  # Command stubs (thin wrappers that invoke skills)
+hooks/{name}.py                     # PreToolUse hooks (Python, read JSON from stdin)
+docs/plans/                         # Design documents (YYYY-MM-DD-{name}-design.md)
 ```
 
 ## Architecture Patterns
@@ -75,6 +77,7 @@ Design docs live in `docs/plans/` with naming `YYYY-MM-DD-{topic}-design.md`. Th
 ## Adding New Components
 
 - **New skill**: Create `skills/{name}/SKILL.md` with YAML frontmatter
+- **New skill with runtime deps**: Add `skills/{name}/project-setup/` with scripts, templates, hooks referenced at runtime from `~/.claude/skills/`. Add `skills/{name}/SETUP.md` with installation instructions and `setup.sh` for one-command install. See `fix-issues` for the reference pattern.
 - **New command**: Create `commands/{name}.md` pointing to the skill
 - **New hook**: Create `hooks/{name}.py` following the stdin JSON protocol, then register in `~/.claude/settings.json` under `hooks.PreToolUse`
 - After adding, re-run symlink commands from README setup section

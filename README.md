@@ -7,6 +7,7 @@ Collection of AI agent skills and hooks for coding assistants.
 ```
 agent-skills/
 ├── skills/           # Skill definitions (SKILL.md files)
+│   ├── fix-issues/           # Bug fixing pipeline (v3.1.13)
 │   ├── generate-api-tests/
 │   ├── git-conventions/
 │   ├── implementation-audit/
@@ -16,6 +17,7 @@ agent-skills/
 │   └── undo-squash/
 ├── commands/         # Command stubs for explicit invocation
 │   ├── commit.md
+│   ├── fix-issues.md
 │   ├── generate-api-tests.md
 │   ├── implementation-audit.md
 │   ├── plan-hardening.md
@@ -37,6 +39,7 @@ agent-skills/
 
 | Skill | Description |
 |-------|-------------|
+| `fix-issues` | Autonomous bug fixing pipeline with 3-gate verification. Investigates, diagnoses, fixes, and proves fixes work. User-level install; optional per-project settings (see `SETUP.md`). |
 | `generate-api-tests` | Framework-agnostic API test generator. Creates YAML integration tests for go-runner and CI/CD pipelines. |
 | `git-conventions` | Branch naming and commit format conventions. Enforces `type: Description` format via hook. |
 | `plan-hardening` | Systematically validate draft designs until convergence (0 must-fix, 0 should-fix). |
@@ -50,6 +53,7 @@ agent-skills/
 | Command | Description |
 |---------|-------------|
 | `/commit` | Create a git commit. Alias for `commit-commands:commit` plugin skill. |
+| `/fix-issues` | Autonomous bug fixing. Investigate → diagnose → fix → verify with gate checks. |
 | `/start-work` | Initialize a feature or fix branch. Invokes git-conventions skill. |
 | `/generate-api-tests` | Generate YAML integration tests for go-runner. Works with Flask, FastAPI, Express, NestJS, Django, Go. |
 | `/squash-cleanup` | Remove squash backup tags and bundle files. |
@@ -68,6 +72,7 @@ agent-skills/
 | `dangerous-command-blocker.py` | Blocks catastrophic commands (`rm -rf`), protects critical paths. |
 | `git-conventions.py` | Validates commit messages follow `type: Description` format. |
 | `session-checkpoint.py` | Intercepts `finishing-a-development-branch` to force documentation update. |
+| `smart-compose.py` | Auto-approves composed Bash commands where every sub-command matches an allow rule. Includes heredoc safe-path for git commits. |
 
 ## Dependencies
 
