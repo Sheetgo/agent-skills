@@ -48,11 +48,8 @@ if [[ -z "$REPO_ROOT" ]]; then
   exit 0
 fi
 
-# Try project-local first, then user-level skill location
-SCRIPT_PATH="$REPO_ROOT/scripts/check-fix-gate.cjs"
-if [[ ! -f "$SCRIPT_PATH" ]]; then
-  SCRIPT_PATH="$HOME/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs"
-fi
+# Use canonical script from user-level skill location
+SCRIPT_PATH="$HOME/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs"
 if [[ ! -f "$SCRIPT_PATH" ]]; then
   echo "$(date +%T) FAIL:script_not_found" >> "$DIAG_LOG"
   exit 0
