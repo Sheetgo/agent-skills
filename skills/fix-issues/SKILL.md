@@ -36,6 +36,149 @@ Is it a bug, issue, or small improvement?
 
 **Checkpoint**: A mandatory Edit to SESSION.md or FIX-XXX.md + TaskUpdate at every status transition. If you don't write it, it didn't happen.
 
+**Universal property**: A language- and framework-agnostic characteristic of a fix that determines what kind of validation it requires. Detected from diff content + investigation outputs. See [Universal Properties](#universal-properties-p1p13).
+
+**Project profile**: A per-project markdown file at `<project-root>/.claude/PROJECT_PROFILE.md` that maps universal properties to project-specific surfaces (file paths, function names, validation tools, business-rule documentation locations). Auto-discovered on first use; integrity-hashed and re-verified at every session start. Template at `~/.claude/skills/fix-issues/project-setup/templates/PROJECT_PROFILE.md`.
+
+**Validator agent**: A subagent dispatched at Phase 4 to verify a fix by walking its specific scenario, observing the result, and reasoning against the fix's stated intent — bounded by fix blast radius, not by codebase size. Selects tools from the project profile's available set per property; runs available tools in parallel for cross-checking when more than one applies.
+
+## Universal Properties (P1–P13)
+
+The skill validates fixes by detecting which universal properties apply, then dispatching property-specific validation. Properties are language-agnostic; project specifics live in `PROJECT_PROFILE.md` Section B. At Phase 1, every fix gets a yes/no answer for each property. The set of `yes` answers determines the validation verdict required at Gate 3.
+
+The full strategy catalog (S1–S14) and cross-check pairs are documented at [`fix-issues/toolbox-strategies.md`](fix-issues/toolbox-strategies.md).
+
+For each property: detection rule (when it fires) and pointer to validation strategy. The full validation strategy per property is in `toolbox-strategies.md`.
+
+| # | Property | Triggers when |
+|---|---|---|
+| **P1** | Boundary crossing — I/O, network, DB, FS, external service, OS API | Diff includes calls listed in profile §B `boundaries`; investigation identifies a process-boundary crossing |
+| **P2a** | Code-level async — Promise/await/futures/coroutines/threads/callbacks | Diff contains language-level async primitives from profile §B `async_primitives`; investigation describes ordering/timing dependence |
+| **P2b** | Platform-deferred mutation — APIs that queue and flush at end-of-script/transaction/frame | Diff touches APIs in profile §B `deferred_mutation_apis`; investigation references "batched", "deferred", "flush", or "lazy" semantics |
+| **P3** | Externally-visible state mutation — writes to shared/persisted state | Diff writes to surfaces in profile §B `state_mutation_surfaces`; investigation describes state transitions |
+| **P4** | Authorization-dependent — interacts with identity, permissions, sessions, tokens | Diff touches auth surfaces in profile §B `auth_surfaces`; investigation references identity-conditional behavior |
+| **P5** | Error classification or routing — error paths, codes, propagation, recovery | Diff touches files matching profile §B `error_routing_surfaces` patterns; **OR** net-negative LOC in those files (deletion of error handling); **OR** investigation explicitly references error routing |
+| **P6** | Cross-layer signaling — change emits a signal another layer consumes | Diff emits new error code/event/state-update; profile §C lists matching emitter/consumer pair |
+| **P7** | Single-observation diagnosis — bug seen once, no reproduction attempt | Phase 1 investigation indicates `observation_count == 1` AND no repro attempted |
+| **P8** | Journey continuity — multi-step user flow, edit/resume modes, navigation | Diff touches files in any profile §D `journeys` step or alt-mode |
+| **P9** | Component ripple — change touches export with N consumers | Static usage analysis (profile §B `usage_analyzer`) returns N≥1 consumers for any changed export |
+| **P10** | Business-rule semantics — change alters WHAT, not HOW | Investigation references a documented rule from profile §G; OR diff changes return shape/validation/defaults/computed values |
+| **P11** | Visual/render dependency — styling, layout, focus, z-stacking, DOM structure | Diff touches files/props listed in profile §B `visual_surfaces` |
+| **P12** | Mock-surface asymmetry — server adds branch with no mock counterpart | Diff adds branch in non-mock file; profile §E mock files have no corresponding update |
+| **P13** | Configuration-only change — config/env/build files, no application code | Diff touches only files in profile §B `config_surfaces`; no application code modified |
+
+For validation strategy per property, see `toolbox-strategies.md`.
+
+### Property detection algorithm
+
+After Phase 1 investigation subagents return, the agent answers each property yes/no:
+
+```
+For P1..P13:
+  Read PROJECT_PROFILE.md Section B (universal properties × project surfaces).
+  Examine: (a) diff lines, (b) investigation outputs, (c) file paths touched, (d) deletion patterns.
+  Answer yes if detection criteria match.
+  If criteria are partially met or borderline → answer YES (conservative bias).
+  Only answer no when no detection criterion fits AT ALL.
+  Every "no" answer for a LIVE-required property (P1, P2a, P2b, P3, P5) requires
+    a one-sentence justification recorded in FIX-XXX.md Section 2.5 (e.g.,
+    "P2b no: this fix touches no API in profile §B deferred_mutation_apis").
+  Record yes/no answers in FIX-XXX.md Section 2.5 "Universal Properties".
+```
+
+**Why conservative bias on borderline cases**: a false positive on a property costs one extra validator run (cheap). A false negative silently skips LIVE-VERIFIED for a fix that needed it (expensive — that's exactly the failure mode the redesign exists to prevent).
+
+When the profile is missing or its referenced sections are stale (integrity hash mismatch), the validator runs in re-discovery mode: re-reads the affected files, updates the profile section, refreshes hashes — before answering the property.
+
+### Verdict required at Gate 3
+
+| Property `yes` count / which | Required verdict |
+|---|---|
+| 0 (no `yes` from any property) | `MOCK-VERIFIED` allowed |
+| Any P1, P2a, P2b, P3, P5 yes | `LIVE-VERIFIED` required |
+| P4 yes | `LIVE-VERIFIED` with identity-switching matrix per profile §B |
+| P6 yes | Cross-layer trace at Gate 2 + LIVE-VERIFIED |
+| P7 yes | ≥3 scenario permutations at Phase 4 + LIVE-VERIFIED |
+| P8 yes | Journey walk + alt-mode walks (per profile §D) |
+| P9 yes | Per-consumer walk (consumers from diagnosis, not exhaustive) |
+| P10 yes | Rule conformance assertion against profile §G documented invariant |
+| P11 yes | Visual reasoning at component + parent context |
+| P12 yes | Mock + real-server cross-check; honesty test extension |
+| P13 yes | Built-artifact inspection + runtime behavior check |
+
+Multiple `yes` answers compose: a fix can require LIVE-VERIFIED (P2b) AND journey walk (P8) AND consumer walk (P9). Validator dispatches all required validations in parallel where independent, sequentially where one's output gates the next.
+
+When the validator cannot achieve the required verdict, the verdict is honestly stamped — never silently downgraded to a green checkmark:
+
+- **`LIMITED-VERIFIED`** — at least one required property has no tool listed in profile §H. The skill stamps this verdict, files a `FIX-VALIDATION-GAP-XXX` issue describing the missing tool (e.g., "no fast-check available for P10 rule conformance"), and continues. The validation gap issue enters the same pipeline (its own investigate → fix → verify cycle).
+- **`OUT_OF_BAND_VERIFICATION_REQUIRED`** — the fix falls into a category in profile §I that walk+observe+reason genuinely cannot verify (security audit, p99 load, memory leak over time, concurrency race at scale, crypto/token expiry, disaster recovery, regulatory compliance, third-party API drift, email/notification side effects). The skill stamps this verdict and surfaces the deferral in Phase 5; never claims VERIFIED.
+
+## Capability Boundary
+
+Walk-and-observe by a validator agent has fundamental limits. The skill declares these honestly rather than stamping fake VERIFIED for issues it cannot really verify. When a fix's investigation indicates one of these categories, the skill emits `OUT_OF_BAND_VERIFICATION_REQUIRED: <category>` and surfaces it at Phase 5 for human follow-up.
+
+### Out-of-band categories — auto-detection patterns
+
+Scan Section 2.6 (investigation output) and the bug description for these signals:
+
+| Category | Signals in investigation/diff | Project tool location |
+|---|---|---|
+| Security vulnerability | "XSS", "CSRF", "injection", "privilege escalation", "auth bypass", "secret leak", "unsafe deserialization", "sandbox escape" | §I.security_vulnerability |
+| Supply chain audit | "dependency vulnerability", "compromised package", "malicious build artifact", "typosquatted dep" | §I.supply_chain_audit |
+| Performance under load | "p99 latency", "throughput regression", "load test", "stress test", "N concurrent users" | §I.performance_under_load |
+| Memory leak (long-running) | "heap growth", "memory leak", "eventual exhaustion", "long-running session" | §I.memory_leak_long_running |
+| Concurrency race at scale | "race condition", "thread contention", "deadlock", "thundering herd", "lock contention" | §I.concurrency_race_at_scale |
+| Crypto / token expiry | "key rotation", "JWT expiry", "signature mismatch", "token refresh", "TLS handshake" | §I.crypto_token_expiry |
+| Disaster recovery / fault tolerance | "failover", "DR", "system down", "fault injection", "kill -9", "circuit breaker" | §I.disaster_recovery_fault_tolerance |
+| Email / notification side effects | "send email", "notification", "webhook", "Slack alert", "SMS" without dry-run mode | §I.email_notification_side_effects |
+| Regulatory / compliance | "GDPR", "HIPAA", "PCI", "SOC2", "data residency", "consent record", "retention policy" | §I.regulatory_compliance |
+| Third-party API contract drift | "external API change", "vendor breaking change", "schema drift" without proactive contract test | §I.third_party_api_drift |
+
+### Detection step (after Phase 1.4)
+
+```
+For each category in the table:
+  Examine bug description + Section 2.6 investigation outputs.
+  If any signal matches:
+    Check PROJECT_PROFILE.md §I.<category>.applies_to_this_project:
+      true + tool listed → use the listed tool/workflow; issue proceeds through Phase 4
+        with that evidence (composed verdict can still be LIVE-VERIFIED if validators run).
+      true + tool empty → write OUT_OF_BAND_VERIFICATION_REQUIRED: <category> in
+        FIX-XXX.md Section 2.6; defer issue at Phase 4 with this verdict; surface at Phase 5.
+      false → not relevant to this project; continue.
+```
+
+The skill never silently downgrades OUT_OF_BAND to MOCK-VERIFIED or LIVE-VERIFIED. These categories are structurally beyond walk-and-observe — adding more tools won't help.
+
+### LIMITED-VERIFIED vs OUT_OF_BAND_VERIFICATION_REQUIRED
+
+| Scenario | Verdict | Resolution path |
+|---|---|---|
+| Project profile §H lists no tool for property | LIMITED-VERIFIED + FIX-VALIDATION-GAP issue | Fixable: install the tool, configure it, the gap issue closes |
+| Bug description matches §I out-of-band category | OUT_OF_BAND_VERIFICATION_REQUIRED | Genuine capability boundary; not solvable by adding more tools |
+
+The first is a project tooling gap (resolvable). The second is a fundamental limit of walk-and-observe (must be addressed by a different workflow — security audit, load test, compliance review, etc., per profile §I).
+
+### Worked example — applying the framework to a representative bug
+
+Bug: a wizard's destination step shows a stale `isPermissionDenied` alert after re-entering edit mode, even though the permission was fixed upstream. Fix clears the flag on re-pick.
+
+Property detection (after Phase 1):
+
+| Property | Yes/No | Why |
+|---|---|---|
+| P3 | yes | Fix writes to wizard state — clearing `isPermissionDenied` |
+| P8 | yes | Wizard journey's edit-mode alt-mode is the bug surface |
+| P9 | yes | The flag setter has multiple consumers (each step reads it) |
+| P11 | yes (weak) | Alert is rendered UI; visible state changes |
+| P1, P2a, P2b, P4, P5, P6, P7, P10, P12, P13 | no | No I/O, async, auth, error routing, single-obs, business rule, mock asymmetry, or config change |
+
+Required verdict (composing): LIVE-VERIFIED + journey walk including edit-mode alt-mode + per-consumer walk + visual reasoning at parent context.
+
+Validator dispatch: in parallel — S2 (state snapshot diff) + S13 (storage diff) for P3; journey walk + S9 (AX tree) for P8 and P11; S12 (`tsc --noEmit`) for P9. Cross-check pairs flag any disagreement (e.g., screenshot says alert hidden, AX tree says alert role still present → finding).
+
+This pattern — detect, compose verdict, dispatch tools, cross-check — is the same for every fix. Sections vary in `yes` count and tool selection.
+
 ## ABSOLUTE RULES
 
 1. **NEVER PUSH TO REMOTE** — all commits stay LOCAL
@@ -78,6 +221,14 @@ Is it a bug, issue, or small improvement?
 | Pipes test command through `tail`/`head`/`grep` | `tail` hides errors before the summary. Redirect to file, then use Grep tool. See Phase 4.1 OUTPUT RULE. |
 | Includes `tail`/`head` in subagent prompts | Subagent instructions must follow the same rules. Use file redirect + Grep pattern. |
 | Skips Final Review in Phase 5 | "I already verified each issue" — per-issue gates check individual correctness. Final Review reasons about the full picture: do fixes conflict? Are there missing edge cases? Does the combined change set make sense for the project? |
+| "Tool A passed and tool B failed, so I used A" | INCONSISTENCY is mandatory at Phase 4.1. Feed the disagreement to Phase 3 as new diagnostic input. You cannot pick a winner. The disagreement IS the finding. |
+| "Tool B is known to be flaky / lag / be wrong" | Disagreement between independent tools is the strongest signal a fix is incomplete. If tool B is genuinely defective, fix tool B as a separate issue. Until then, treat the disagreement as a real finding. |
+| "Property is borderline, marking no" | Conservative bias: when criteria are partially met, answer YES. False positive costs one validator run; false negative ships a bug. See Phase 1.4 detection algorithm. |
+| Skips Phase 2.0 baseline for "simple LIGHT issue" | Phase 2.0 is regression-attribution infrastructure, mandatory for ALL scopes including LIGHT and single-issue sessions. PRE-EXISTING attribution at 4.3 self-seals without it. |
+| Demotes verdict to LIMITED-VERIFIED to skip running an available tool | LIMITED-VERIFIED is permitted ONLY when PROJECT_PROFILE §H lists no tool for the property. If §H has a tool, running it is mandatory. Demoting because running is inconvenient is a pipeline violation. |
+| "I think the tool would say PASS" | Predicting tool output is not running the tool. Run it. Read the actual output. Cite it in Section 4. |
+| "VERIFIED-BY-PRECEDING-FIX, skip Phase 4" | Phase 4.1 still runs. VERIFIED-BY-PRECEDING-FIX still requires Section 2.5 + Section 4 per-property verdicts citing the preceding fix's commit hash. Inheriting verification without re-running is not allowed. |
+| Describes the fix as "a band-aid" or "temporary" in prose without writing the literal `PROVISIONAL_PROPER_FIX_REQUIRED:` token | Phase 5.0.5 grep's for the LITERAL token. Paraphrase bypasses the scan silently. If fix_type is PROVISIONAL, write the EXACT string `PROVISIONAL_PROPER_FIX_REQUIRED: <description>` to Section 3. No paraphrase, no synonym, no narrative substitute. |
 
 ## CHECKPOINT PROTOCOL (MANDATORY)
 
@@ -173,6 +324,60 @@ Scope can only UPGRADE, never downgrade.
 
 Record scope in FIX-XXX.md when the issue file is created in Phase 1.
 
+### 0.4 Load Project Profile + Verify Integrity
+
+The project profile (`<project-root>/.claude/PROJECT_PROFILE.md`) maps the universal property framework to project-specific surfaces. It is required for Phase 1.4 (property detection) and Phase 4 (validator dispatch).
+
+```
+1. Read <project-root>/.claude/PROJECT_PROFILE.md.
+
+2. If missing:
+   → Run profile auto-discovery:
+     node ~/.claude/skills/fix-issues/project-setup/scripts/discover-profile.cjs <project-root>
+   → If the script doesn't exist or fails, dispatch a profiler subagent:
+     - Reads CLAUDE.md, package.json/pyproject.toml/Cargo.toml/go.mod
+     - Greps for known async primitives, error patterns, mock files
+     - Identifies user journeys, cross-layer pairs, validation tools
+     - Computes integrity hashes for referenced files
+     - Writes the profile from the template at
+       ~/.claude/skills/fix-issues/project-setup/templates/PROJECT_PROFILE.md
+   → Continue with the freshly-discovered profile.
+
+3. If present, verify integrity:
+   For each `path` in profile §J integrity_hashes:
+     compare current `git rev-parse HEAD:<path>` to stored sha
+     if `git rev-parse HEAD:<path>` errors (e.g., file untracked):
+       fall back to sha256sum <path> compared to a last-known sha in the profile header
+       if no last-known sha exists → mark UNVERIFIED, require re-discovery before use
+     if mismatch → mark dependent profile section as UNVERIFIED (note in profile header)
+
+4. Verify §H population is sufficient for autonomous operation:
+   For each LIVE-required property (P1, P2a, P2b, P3, P5):
+     verify §H lists at least one tool for that property
+     if §H is empty for any LIVE-required property:
+       write to SESSION.md header:
+         "PROFILE-INCOMPLETE: §H missing entries for [list of properties] —
+          fixes touching these properties cannot achieve LIVE-VERIFIED in this project"
+       Continue, but every fix that fires one of these properties will be
+       blocked from LIVE-VERIFIED at Phase 4 and emit a FIX-VALIDATION-GAP-XXX
+       to add the missing tool to the project (e.g., install Playwright,
+       configure fast-check, add semgrep rules).
+
+5. Load profile §I (Capability Boundary) into session context. Issues whose
+   investigation indicates a category in §I (security audit, p99 load, memory
+   leak, concurrency race at scale, crypto/token expiry, disaster recovery,
+   regulatory compliance, third-party API drift, email/notification side effects)
+   will receive `OUT_OF_BAND_VERIFICATION_REQUIRED` instead of `VERIFIED`.
+
+CHECKPOINT: Note in SESSION.md header one of:
+  - PROFILE-VERIFIED (loaded; all hashes match; §H sufficient for LIVE-required properties)
+  - PROFILE-AUTO-DISCOVERED (newly created this session)
+  - PROFILE-WITH-STALE-SECTIONS (some hash mismatches; affected sections marked UNVERIFIED)
+  - PROFILE-INCOMPLETE (loaded but §H missing entries for at least one LIVE-required property)
+```
+
+Stale-section handling: any property whose `yes` answer depends on an UNVERIFIED profile subsection triggers re-discovery mode in Phase 1.4 (re-reads the affected files, refreshes the profile section, updates the hash) before the property answer is recorded.
+
 ---
 
 ## PHASE 1: Investigate (Per Issue)
@@ -222,6 +427,15 @@ STANDARD/DEEP: reproduction mandatory. Use Playwright (frontend) or clasp (backe
 
 **Imported from audit?** Check freshness — if audit is current AND thorough, skip to Phase 2 with audit hypothesis. If stale/thin, run LIGHT investigation. See [import-protocol.md](fix-issues/import-protocol.md).
 
+### 1.4 Detect Universal Properties
+
+After 1.1–1.3, run the [Property detection algorithm](#property-detection-algorithm). Read PROJECT_PROFILE.md Section B; for each property P1–P13, examine diff lines, investigation outputs, file paths touched, and deletion patterns; answer yes/no.
+
+**CHECKPOINT**: Record yes/no answers in FIX-XXX.md Section 2.5 "Universal Properties" with one-sentence justification per `yes` answer. The set of `yes` properties determines the [Verdict required at Gate 3](#verdict-required-at-gate-3).
+
+If PROJECT_PROFILE.md is missing → trigger profile auto-discovery (see Phase 0; runs once per project, then re-uses).
+If a referenced section in the profile shows integrity hash mismatch → run that subsection in re-discovery mode before answering the dependent property.
+
 ---
 
 ## PHASE 2: Diagnose (Per Issue)
@@ -229,6 +443,34 @@ STANDARD/DEEP: reproduction mandatory. Use Playwright (frontend) or clasp (backe
 **Goal**: Confirm hypothesis using live tools. Be autonomous — use everything available.
 
 **Entry**: Issue status should be INVESTIGATING.
+
+### 2.0 Capture Baseline (MANDATORY — All Scopes, All Sessions)
+
+Before applying ANY diagnostic that changes state — and before any prior issue's fix has its effect verified — capture a baseline snapshot. This is the reference point that lets later phases distinguish "this fix's regression" from "prior fix's residual effect" or "pre-existing failure."
+
+**Phase 2.0 is MANDATORY for all scopes (including LIGHT) and all session sizes (including single-issue sessions).** The "LIGHT: diagnostic tooling optional" exemption in Phase 2.1 does NOT apply to Phase 2.0 — this is regression-attribution infrastructure, not a diagnostic tool. Without a baseline, the PRE-EXISTING attribution at Phase 4.3 has no anchor and self-seals.
+
+```
+1. Capture full test suite count (project-specific command from PROJECT_PROFILE §H):
+   - vitest: npx vitest run --reporter verbose 2>&1 > /tmp/baseline-N.txt
+   - pytest: pytest --tb=no -q 2>&1 > /tmp/baseline-N.txt
+   - cargo: cargo test 2>&1 > /tmp/baseline-N.txt
+   Read the file and record: passed/failed/skipped counts in FIX-XXX.md Section 2.0.
+
+2. Capture environment state hash:
+   - Deployed code SHA (e.g., git rev-parse HEAD; or for cloud-deployed projects,
+     the version stamp of the running deployment)
+   - Test fixture state hash (sha256 of fixture data files, if applicable)
+   - Config snapshot (hash of effective env vars + .env files)
+   Record in FIX-XXX.md Section 2.0 as "baseline_hash: <combined sha>".
+
+CHECKPOINT: FIX-XXX.md Section 2.0 = "Baseline at issue start: <test counts> + <hash>"
+```
+
+For the first issue in a session, this is the session's reference baseline.
+For subsequent issues, also note the delta from the previous issue's start baseline — that delta is attributable to the previous issue's fix and any cleanup, not to the current issue.
+
+At Phase 4, the validator references Section 2.0: any test count regression must be attributable to *this* fix (issue N) or, if attributable to issue N-1, becomes its own follow-up issue.
 
 ### 2.1 Diagnostic Toolbox
 
@@ -334,6 +576,39 @@ These rules are passed to the implementer subagent:
 10. One commit per issue — never bundle multiple FIX issues in a single commit, even in LIGHT batches
 11. Never instruct subagents to pipe test output through `tail`/`head`/`grep` — use file redirect + Grep tool pattern from Phase 4.1
 
+### 3.2.1 Fix Type — PROPER vs PROVISIONAL
+
+Some fixes are deliberate workarounds, not root-cause solutions. Mark these explicitly so the framework can track the proper-fix follow-up:
+
+```
+fix_type: PROPER (default)
+  Addresses the root cause from Section 2.6 directly. No follow-up issue required.
+
+fix_type: PROVISIONAL
+  Deliberate band-aid that unblocks the user but does NOT address the root cause.
+  The proper fix is deferred to a future session.
+  Examples: excluding a file type from a code path because the path doesn't yet
+  handle it; suppressing an error to unblock; hard-coding a value pending a
+  proper config mechanism.
+
+  When marking fix_type: PROVISIONAL at Phase 3, the implementer MUST also write
+  to FIX-XXX.md Section 3 (in addition to fix description):
+
+    PROVISIONAL_PROPER_FIX_REQUIRED: <one-sentence description of what the proper fix entails>
+
+  This is a literal token. Phase 5 grep's for it; presence blocks the session
+  from "Complete" status until either:
+    (a) a follow-up FIX-XXX-PROPER issue is registered in this same session, OR
+    (b) an entry exists in <project-root>/.claude/DEFERRED_FIXES.md describing
+        the proper fix scope and acceptance criteria.
+
+  PROVISIONAL fixes pass Gate 3 with status DEFERRED-PROPER (not VERIFIED).
+  The user/team must take action; the skill cannot self-resolve a band-aid into
+  a proper fix.
+```
+
+**Why this matters**: a band-aid VERIFIED with the same gates as a root-cause fix is the FM-6 failure mode (V-007 9-hour band-aid → proper fix cycle in the forensic record). The token + Phase 5 scan + DEFERRED_FIXES.md persistence prevents the band-aid from silently shipping as if it were the proper fix.
+
 ### 3.3 Implement the Fix
 
 **Step A — Dispatch implementer subagent:**
@@ -343,6 +618,13 @@ Description: "Fix FIX-XXX: [brief description]"
 Prompt: Include ALL of: fix strategy from Section 3 + root cause from Section 2.6 +
   affected files from Section 2.1 + implementer constraints from 3.2 +
   pre-fix validation concerns from Section 2.8
+
+If the fix is intended as a band-aid (fix_type: PROVISIONAL), the implementer prompt
+MUST also include this verbatim instruction:
+  "This fix is PROVISIONAL. Write the literal string
+   `PROVISIONAL_PROPER_FIX_REQUIRED: <one-sentence description of the proper fix>`
+   on its own line in Section 3 of FIX-XXX.md. Do not paraphrase. Do not use synonyms.
+   The grep at Phase 5.0.5 matches the exact token; paraphrase bypasses it silently."
 
 The implementer MUST: apply changes, write regression test, run tests, commit, report back.
 Do NOT edit files yourself. The subagent implements, tests, and commits.
@@ -391,63 +673,128 @@ node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <sessi
 
 ---
 
-## PROVE IT WORKS (MANDATORY)
-
-Code reading is hypothesis, not proof. Every fix needs EXTERNAL EVIDENCE.
-
-| Evidence Type | Strength | When to Use |
-|---------------|----------|-------------|
-| Integration test pass | Strongest | Backend logic changes |
-| E2E test pass | Strong | UI behavior changes |
-| Playwright screenshot | Strong | Visual/cosmetic changes |
-| Unit test pass | Good | Isolated logic changes |
-| GCP log / clasp output | Good | Runtime verification |
-| Code reading alone | INSUFFICIENT | Never sufficient as sole proof |
-
-NEVER SAY: "I can see from the code that this works" / "The logic is correct"
-ALWAYS SAY: "Tests pass: [command] → [result]" / "Screenshot confirms: [what]"
-
 ## PHASE 4: Verify (Per Issue)
 
-**Goal**: PROVE the fix works with external evidence.
+**Goal**: PROVE the fix works with external evidence appropriate to the universal properties detected at Phase 1.4. Code reading is hypothesis, not proof.
 
-**Entry**: Issue status should be FIXED.
+**Entry**: Issue status should be FIXED. FIX-XXX.md Section 2.5 (Universal Properties) is populated.
 
-### 4.1 Verification Checklist
+### 4.1 Property-Driven Validator Dispatch
+
+The validator dispatched here is bounded by the FIX'S blast radius (which properties fired yes), not by codebase size. No baseline-and-diff against captured snapshots — instead, observation + reasoning by a subagent against Phase 1's stated intent.
 
 ```
-MANDATORY:
-  □ Unit tests pass for changed files
-  □ E2E tests pass for affected flows
-  □ New regression test covers the bug scenario
-  □ Integration tests pass (if backend change)
+1. Read FIX-XXX.md Section 2.5 → collect the set of yes properties.
 
-OUTPUT RULE (applies to ALL test runs, including batches and late-session):
-  □ NEVER pipe test commands through tail/head/grep
-  □ Redirect output to file, then use Grep tool to check results:
-    Bash: npx vitest run --reporter verbose 2>&1 > /tmp/claude/vitest-output.txt
-    Grep: pattern="FAIL|Error|✗" path="/tmp/claude/vitest-output.txt"
-    Grep: pattern="Tests.*passed|Test Files" path="/tmp/claude/vitest-output.txt"
-  □ This applies even when "just checking if tests pass" — tail hides failures
+2. Look up required verdicts in #verdict-required-at-gate-3 (compose all that apply).
 
-CONDITIONAL:
-  □ If UI change: Playwright screenshot BEFORE and AFTER
-  □ If NOT a UI change but gate-check flags it: add `**UI Change**: No` to Section 2
-    (keywords like "cosmetic", "visual", "UI" in investigation text trigger false positives)
-  □ If backend: clasp run verification on DEV (deploy first)
-  □ If cross-cutting: full E2E + integration test
-  □ If transient/race: run test suite twice — both must pass
+3. For each yes property:
+   a. Read PROJECT_PROFILE.md Section H to find available tools mapped to this property.
+   b. Identify the strongest available tool (top of list) AND all other available tools.
+   c. Dispatch a validator subagent with:
+      - The fix's INTENT (from Phase 1 Section 2.6: what should happen now)
+      - The bug's SYMPTOM (from Phase 1 Section 2.6: what was wrong before)
+      - The SPECIFIC scope (changed files from 2.1, ripple targets from 2.5/P9)
+      - The selected tools and their commands
+      - INSTRUCTION: walk the fix's specific scenario; observe; reason against intent;
+        report PASS or specific concrete contradictions.
 
-For verification commands, see [toolbox.md](fix-issues/toolbox.md).
+4. Run validators in parallel where independent, sequentially where one's output gates the next.
+   Multiple tools per property → cross-check (see toolbox-strategies.md "Cross-check pairs").
+
+5. Reconcile per property (mechanical, not by judgment):
+   - All tools agree PASS for property → property verdict PASS.
+   - Any tool reports contradiction → property verdict FAIL with specific contradiction.
+   - Tools disagree (one PASS, one FAIL) → INCONSISTENCY finding (treat as FAIL).
+     Do NOT reason about which tool is "correct". Do NOT dismiss tool B as flaky/wrong.
+     The disagreement IS the finding. Feed it to Phase 3 as new diagnostic input.
+   - No tool available for the property → LIMITED-VERIFIED for that property
+     (auto-create FIX-VALIDATION-GAP-XXX issue describing the missing tool).
+
+6. Run validators in parallel where independent. Two tools are independent if they
+   observe DIFFERENT evidence channels (e.g., S2 observes in-memory state; S13 observes
+   persisted state — different channels). Sequential dispatch is permitted ONLY when
+   tool B genuinely requires tool A's output as input (e.g., a HAR trace drives a log
+   assertion query). "Tool A's output makes tool B's output predictable" is NOT a
+   dependency — tool B must still run.
+
+6. Compose overall verdict from per-property verdicts:
+   - All PASS → VERIFIED with evidence type per profile §H
+     (tag as MOCK-VERIFIED if no live-required property fired; otherwise LIVE-VERIFIED)
+   - Any FAIL → auto-loop to Phase 3 with the failure as new diagnostic input (max 3 loops)
+   - Any LIMITED-VERIFIED → overall LIMITED-VERIFIED with property gaps listed
+   - Investigation indicated a profile §I capability-boundary category → OUT_OF_BAND_VERIFICATION_REQUIRED
+     (skill never silently downgrades to VERIFIED for these — see Capability Boundary, Chunk 3)
+
+OUTPUT RULE (applies to all subagent + test invocations):
+  □ NEVER pipe test commands through tail/head/grep — truncated output hides failures.
+  □ Redirect to file, then read with Read tool or Grep tool with explicit patterns.
+    Example: npx vitest run --reporter verbose 2>&1 > /tmp/claude/vitest-out.txt
+             Grep: pattern="FAIL|Error|✗" path="/tmp/claude/vitest-out.txt"
+```
+
+CHECKPOINT: After validator subagent(s) return, append to FIX-XXX.md Section 4:
+```
+Per-property verdicts:
+  - P{X}: PASS | FAIL | LIMITED-VERIFIED — <evidence summary or contradiction>
+  - ...
+Composed verdict: MOCK-VERIFIED | LIVE-VERIFIED | LIMITED-VERIFIED | OUT_OF_BAND_VERIFICATION_REQUIRED
+Tools used: <list>
+Cross-check disagreements: <list or "none">
 ```
 
 ### 4.2 Verification Results
 
-All pass → VERIFIED. Partial → PARTIALLY_VERIFIED. Fail → loop Phase 3 (max 3). Infrastructure → BLOCKED.
+| Composed verdict | Action |
+|---|---|
+| MOCK-VERIFIED or LIVE-VERIFIED, all PASS, fix_type=PROPER | Proceed to Phase 4.3 |
+| MOCK-VERIFIED or LIVE-VERIFIED, all PASS, fix_type=PROVISIONAL | Composed verdict is `LIVE-VERIFIED + DEFERRED-PROPER` (or `MOCK-VERIFIED + DEFERRED-PROPER`). Proceed to Phase 4.3, but Gate 3 stamps DEFERRED-PROPER instead of VERIFIED. Phase 5.0.5 PROVISIONAL token scan must find a follow-up registration |
+| Any FAIL | Auto-loop to Phase 3 with the contradiction as new diagnosis input. Max 3 loops; if still failing, status → BLOCKED-NEEDS-DESIGN, continue next issue |
+| LIMITED-VERIFIED | Proceed; FIX-VALIDATION-GAP-XXX is in the queue |
+| OUT_OF_BAND_VERIFICATION_REQUIRED | Status → DEFERRED with reason; surface in Phase 5 executive summary; continue next issue |
 
-### 4.3 Cross-Issue Regression + Next Issue
+Multiple `yes` properties compose. The composed verdict is the **most conservative** across all per-property verdicts:
 
-Re-run tests from ALL previously VERIFIED issues. Regression → add FIX-XXX. Check if current fix resolved next QUEUED issue.
+- LIMITED-VERIFIED for any property → composed = LIMITED-VERIFIED.
+- OUT_OF_BAND_VERIFICATION_REQUIRED for any property → composed = OUT_OF_BAND.
+- All per-property verdicts PASS, AND any of P1/P2a/P2b/P3/P5 fired yes → composed = LIVE-VERIFIED. Each LIVE-required property must have at least one live-tool invocation evidenced in Section 4.
+- All per-property verdicts PASS, AND no LIVE-required property fired → composed = MOCK-VERIFIED.
+
+"LIVE-VERIFIED" is a CLAIM about evidence, not a STATUS earned by passing other tools — i.e., a P9 PASS via type checker does NOT inherit the LIVE-VERIFIED stamp from a P3 PASS via persistence-layer query. Each property's evidence must independently satisfy the verdict it requires.
+
+### 4.3 Cross-Issue Regression Attribution + Next Issue
+
+Re-run the full test suite. Compare to FIX-XXX.md Section 2.0 (baseline captured at this issue's start):
+
+```
+Delta = post_fix_counts − baseline_counts (Section 2.0)
+
+If Delta is favorable (more passing, no new failures) → no regression; proceed.
+
+If Delta shows new failures:
+  For each new failure, attribute to:
+    - THIS fix (issue N): the failure is in a file/area touched by this fix's diff,
+      OR is in a test that exercises the property the fix changed.
+      → Loop back to Phase 3 (counts against the 3-loop limit).
+    - PRIOR fix (issue N-1, N-2, ...): the failure is in a file touched by an earlier
+      fix in this session AND not by this fix.
+      → File a new issue (FIX-XXX with reference to the responsible prior fix).
+        Continue this issue's verdict; the new issue enters the pipeline.
+    - PRE-EXISTING: the failure was already failing in baseline_N (Section 2.0
+      shows the same failure) AND Section 2.0's `baseline_hash` matches
+      `git rev-parse HEAD~<n>` where n = number of fixes applied in this session.
+      The hash check is required — without it, the baseline could have been
+      captured AFTER an earlier fix was applied and the regression would
+      self-seal as PRE-EXISTING.
+      → Note in Section 4 with explicit hash citation; not a regression of
+        this fix; not a new issue unless Phase 5 final review decides otherwise.
+      → If `baseline_hash` does NOT match the session-start commit, treat the
+        baseline as TAINTED and re-attribute the failure to the most recent fix.
+  
+  Record attribution in FIX-XXX.md Section 4 with one-line justification per failure.
+```
+
+After regression attribution: check if THIS fix incidentally resolved the next QUEUED issue (re-read its description against the diff). If yes, mark the next issue VERIFIED-BY-PRECEDING-FIX with cross-reference; skip its Phase 1-3 (Phase 4.1 still runs to confirm via property-driven validator).
 
 ### 4.4 Update Session File
 
@@ -457,7 +804,7 @@ CHECKPOINT: Section 4 (commands + results + final status), Section 1 (status + R
 
 ## GATE 3: Verify → VERIFIED
 
-**Step 1**: Write verification results to FIX-XXX.md Section 4 (commands, results, final status). Write `GATE 3 PASSED` as the last line.
+**Step 1**: Write verification results to FIX-XXX.md Section 4 (per-property verdicts + composed verdict + tools used + cross-check disagreements per Phase 4.1 CHECKPOINT format). Write `GATE 3 PASSED` as the last line.
 
 **Step 2**: Run the gate-check script via Bash. This is MANDATORY — writing the marker (Step 1) without running the script (Step 2) is a pipeline violation.
 ```
@@ -466,18 +813,57 @@ node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <sessi
 **If FAIL** → fix every failing check, re-run until PASS.
 **If PASS** → continue to Step 3.
 
-**For batched issues**: Run the script SEPARATELY for EACH issue in the batch. One batch-wide test run does not substitute for per-issue gate checks. Example for a 3-issue batch:
+**Step 3 — Property-verdict assertion** (MANDATORY, in addition to the script):
+
+The current `check-fix-gate.cjs` (v1) checks structural completeness only. It does NOT yet parse Section 2.5 / Section 4 cross-references. Until script v2 lands, this assertion is performed by the agent — and is non-negotiable. Treat it as you would the script: cannot rationalize past failures.
+
+Read FIX-XXX.md Section 2.5 (yes properties) and Section 4 (composed verdict + per-property verdicts). Verify mechanically (not by judgment):
+
+```
+For each yes property in Section 2.5:
+  Verify Section 4 records a per-property verdict (PASS / FAIL / LIMITED-VERIFIED).
+  If a property fired yes at Phase 1.4 but has NO entry in Section 4 → ASSERTION FAIL.
+
+Verify the composed verdict matches what's required by the verdict table:
+  If any of P1, P2a, P2b, P3, P5 was yes → composed verdict must be LIVE-VERIFIED or stronger.
+  If P4 was yes → composed verdict must include identity-switching evidence in Section 4.
+  If P12 was yes → composed verdict must include real-server invocation evidence (not mock-only).
+  Etc. per the full verdict table.
+
+If composed verdict is LIMITED-VERIFIED → verify FIX-VALIDATION-GAP-XXX exists in the issue registry.
+If composed verdict is OUT_OF_BAND_VERIFICATION_REQUIRED → verify the §I capability-boundary
+  category is named explicitly in Section 4.
+If FIX-XXX.md Section 3 contains `PROVISIONAL_PROPER_FIX_REQUIRED:` → verify composed
+  verdict ends in `+ DEFERRED-PROPER` (e.g., `LIVE-VERIFIED + DEFERRED-PROPER`), NOT
+  plain `LIVE-VERIFIED`. The DEFERRED-PROPER suffix is mandatory for PROVISIONAL fixes.
+```
+
+**If any assertion fails — what you MUST do:**
+
+1. Identify the missing per-property evidence. The per-property entry MUST cite an actual tool invocation that produced output (a `Bash` call, a subagent dispatch, an MCP tool call). "Code reading" or "I reasoned about it" is not evidence.
+
+2. Run the missing validators. Fetch the tools listed for that property in PROJECT_PROFILE §H. Dispatch them. Append their outputs to FIX-XXX.md Section 4 with the actual command and observed output.
+
+3. Verdict demotion to LIMITED-VERIFIED is permitted ONLY when PROJECT_PROFILE §H is empty for that property (no tool exists in this project). If §H lists a tool and it was not run, you MUST run it. "I think the tool would say PASS" is not running it. Demoting the verdict because running the tool is inconvenient is a pipeline violation — log the violation and run the tool.
+
+4. Once Section 4 has actual tool outputs for every yes property, re-run the assertion. If now passing → continue to Step 4.
+
+**Script-update note (future work)**: Extend `check-fix-gate.cjs` `checkGate3()` to (a) parse Section 2.5 to collect yes properties; (b) scan Section 4 for a per-property verdict row per yes property; (c) enforce that LIVE-VERIFIED composed verdict is present when any of P1/P2a/P2b/P3/P5 fired yes; (d) flag verdict-demotion to LIMITED-VERIFIED that lacks a §H-empty justification. Tracked as a separate enhancement issue, but the assertion above is enforced by the agent today.
+
+**For batched issues**: Run the script AND the property-verdict assertion SEPARATELY for EACH issue. One batch-wide test run does not substitute for per-issue gate checks. Example for a 3-issue batch:
 ```
 node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <session-dir> 3 FIX-001
+# (then property-verdict assertion for FIX-001 manually)
 node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <session-dir> 3 FIX-002
-node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <session-dir> 3 FIX-003
+# (then property-verdict assertion for FIX-002 manually)
+...
 ```
 
-**Step 3**: Update FIX-XXX.md header `> **Status**: VERIFIED`
+**Step 4**: Update FIX-XXX.md header `> **Status**: VERIFIED` — OR `DEFERRED-PROPER` if the issue had `PROVISIONAL_PROPER_FIX_REQUIRED` in Section 3.
 
-**Step 4**: Update SESSION.md — issue row status → VERIFIED, Executive Summary counts, Current Issue → next QUEUED issue.
+**Step 5**: Update SESSION.md — issue row status → VERIFIED (or DEFERRED-PROPER), Executive Summary counts, Current Issue → next QUEUED issue.
 
-**Step 5**: Apply context hygiene (see Between-Issue Context Hygiene section), then start Phase 1 for the next QUEUED issue. If no QUEUED issues remain, proceed to Phase 5 wrap-up.
+**Step 6**: Apply context hygiene (see Between-Issue Context Hygiene section), then start Phase 1 for the next QUEUED issue. If no QUEUED issues remain, proceed to Phase 5 wrap-up.
 
 ### Script Says FAIL — What You MUST Do
 
@@ -587,15 +973,56 @@ Report:
 | CONFLICT (cross-issue) | Resolve the conflict, test both fixes together |
 | CONCERN (project impact) | Document in Section 7 as recommendation for human review |
 
+### 5.0.5 Token Scan — PROVISIONAL + OUT_OF_BAND deferrals
+
+Before finalizing, scan the session directory for two machine-readable tokens that block "Complete" status:
+
+```
+1. PROVISIONAL_PROPER_FIX_REQUIRED:
+   grep -rn "PROVISIONAL_PROPER_FIX_REQUIRED" <session-dir>/
+
+   For each match:
+     Verify EITHER:
+       (a) A follow-up FIX-XXX-PROPER issue exists in this session's registry, OR
+       (b) An entry exists in <project-root>/.claude/DEFERRED_FIXES.md with:
+           - issue_id (the original FIX-XXX)
+           - description matching the PROVISIONAL_PROPER_FIX_REQUIRED text
+           - acceptance_criteria
+           - target_session (when proper fix should land)
+
+   If NEITHER (a) NOR (b) exists for any match → BLOCK finalization.
+   Either register the follow-up issue OR add the DEFERRED_FIXES.md entry before
+   continuing. The session cannot finalize as "Complete" with a band-aid that
+   has no follow-up tracking.
+
+2. OUT_OF_BAND_VERIFICATION_REQUIRED:
+   grep -rn "OUT_OF_BAND_VERIFICATION_REQUIRED" <session-dir>/
+
+   For each match, surface in SESSION.md Section 7 with:
+     - The issue ID
+     - The category (security, supply chain, p99 load, memory, concurrency, crypto,
+       DR, email, regulatory, third-party-API)
+     - The recommended workflow per PROJECT_PROFILE.md §I.<category>
+
+   These do NOT block finalization (they were correctly classified as out of scope),
+   but the executive summary MUST list them so a human takes action.
+```
+
+CHECKPOINT: SESSION.md header includes a "Deferrals scan: <N> PROVISIONAL with follow-up registered, <M> OUT_OF_BAND surfaced for human review" line.
+
 ### 5.1 Finalize Session
 
 ```
 CHECKPOINT (final):
-  1. Update Executive Summary (all metric counts)
+  1. Update Executive Summary (all metric counts; including separate counts for
+     VERIFIED, DEFERRED-PROPER, OUT_OF_BAND, BLOCKED-NEEDS-DESIGN)
   2. Overall Status → "Complete" (or "Partial — N deferred/blocked")
+     "Complete" requires zero unresolved PROVISIONAL_PROPER_FIX_REQUIRED tokens
+     (per Section 5.0.5 above).
   3. Current Issue → "-"
   4. SESSION.md Section 5 (Commits Made): all commits with hash, message, files
-  5. SESSION.md Section 7 (Recommendations): any systemic issues found + final review results
+  5. SESSION.md Section 7 (Recommendations): final review results + OUT_OF_BAND
+     items surfaced from token scan + tooling-gap issues opened
   6. Check Sign-off boxes
   7. Merge FIX files into SESSION.md (see Section 5.2 below)
   8. Stage the ENTIRE session directory: `git add <session-dir>/` (captures both updated SESSION.md AND deleted FIX files)
