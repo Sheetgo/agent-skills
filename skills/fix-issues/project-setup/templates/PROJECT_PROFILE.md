@@ -1,12 +1,24 @@
 # Project Profile — fix-issues Skill
 
 > **Generated**: [WILL BE AUTO-FILLED]
-> **Schema version**: 1.0
+> **Schema version**: 1.1
 > **Last verified**: [WILL BE AUTO-FILLED]
 > **Profile integrity**: [VERIFIED | UNVERIFIED — sections marked stale]
 > **Lives at**: `<project-root>/.claude/PROJECT_PROFILE.md` (per-project artifact)
 
 This file is the bridge between the universal `fix-issues` skill and project-specific surfaces. Read at every session start; integrity-checked; auto-rebuilt on drift.
+
+## Top-level configuration
+
+```yaml
+# Locations Phase 5.0.5 PROVISIONAL_PROPER_FIX_REQUIRED scan should accept as
+# tracking destinations for deferred follow-up work. Paths relative to project root.
+# Default if absent: [".claude/DEFERRED_FIXES.md"].
+# Configure ALTERNATIVE locations here when project convention puts deferred work
+# elsewhere — e.g., a pre-existing docs/deferred-items.md file.
+deferred_fixes_locations:
+  - .claude/DEFERRED_FIXES.md
+```
 
 ## How this file is used by the skill
 

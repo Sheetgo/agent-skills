@@ -62,6 +62,7 @@ function parseIssueFile(filePath) {
       affectedFiles: extractSubsectionTableFiles(s2Block, '2.1'),
       diagnosticResults: extractSubsectionTableRows(s2Block, '2.7'),
       preFixValidation: extractSubsectionTableRows(s2Block, '2.8'),
+      universalProperties: extractUniversalPropertiesTable(s2Block),
       hasGatePassage: /GATE 1 PASSED/i.test(s2Block),
       isBatched: /GATE 1 PASSED.*\[batch\]/i.test(s2Block),
       raw: s2Block,
@@ -74,17 +75,132 @@ function parseIssueFile(filePath) {
       hasSpecReview: /[Ss]pec [Cc]omplian|review/i.test(s3Block),
       hasCodeReview: /[Cc]ode [Qq]uality|requesting-code-review/i.test(s3Block) || /LIGHT skip/i.test(s3Block),
       codeReviewSkipped: /LIGHT skip/i.test(s3Block),
+      provisionalToken: /PROVISIONAL_PROPER_FIX_REQUIRED:/i.test(s3Block),
       raw: s3Block,
     },
     section4: {
       verificationRows: extractTableRows(s4Block)
         .filter(row => row.length >= 3 && row[0].trim() !== 'Check'),
+      perPropertyVerdicts: extractPerPropertyVerdicts(s4Block),
+      composedVerdict: extractComposedVerdict(s4Block),
       finalStatus: (s4Block.match(/\*\*Final Status\*\*:\s*(.+)/) || [])[1]?.trim() || '',
       hasGatePassage: /GATE 3 PASSED/i.test(s4Block),
       screenshotPaths: [...s4Block.matchAll(/([^\s]+\.png)/g)].map(m => m[1]),
       raw: s4Block,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers — universal-properties parsing (v2 — Property-Verdict Assertion)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a property name from "P1 boundary crossing" → "P1", "P2a code-level async" → "P2A", etc.
+ * Returns uppercase canonical form (P1, P2A, P2B, P3, ...).
+ */
+function normalizePropertyName(raw) {
+  if (!raw) return '';
+  const m = String(raw).trim().match(/^(P\d+[a-zA-Z]?)/);
+  return m ? m[1].toUpperCase() : String(raw).trim().toUpperCase();
+}
+
+/**
+ * Extract the universal-properties table from Section 2.5.
+ * Handles both #### 2.5 and ##### 2.5 heading depths (mid-session vs post-merge SESSION.md).
+ * Returns array of { property: 'P1', yes: bool, justification: string }.
+ */
+function extractUniversalPropertiesTable(s2Block) {
+  if (!s2Block) return [];
+  // Match #### 2.5 OR ##### 2.5 (post-merge depth) — stop at next heading of any depth
+  const m = s2Block.match(/#{4,5}\s*2\.5[^\n]*\n([\s\S]*?)(?=#{2,5}\s|\n---|\n##|$)/);
+  if (!m) return [];
+  const rows = extractTableRows(m[1]);
+  return rows
+    .filter(row => row.length >= 2 && /^P\d/i.test(row[0].trim()))
+    .map(row => ({
+      property: normalizePropertyName(row[0]),
+      yes: /\byes\b/i.test(row[1] || ''),
+      justification: (row[2] || row.slice(2).join(' | ') || '').trim(),
+    }));
+}
+
+/**
+ * Extract the per-property verdicts table from Section 4.
+ * Looks for the first table with a Property + Verdict column header.
+ * Returns array of { property, verdict, tools, evidence }.
+ */
+function extractPerPropertyVerdicts(s4Block) {
+  if (!s4Block) return [];
+  const lines = s4Block.split('\n');
+  const result = [];
+  let inTable = false;
+  let headers = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('|') && !line.match(/^\|[\s-|]+\|$/)) {
+      const cells = line.split('|').slice(1, -1).map(c => c.trim());
+      if (!inTable) {
+        const lower = cells.map(c => c.toLowerCase());
+        if (lower.includes('property') && lower.some(c => c === 'verdict')) {
+          inTable = true;
+          headers = lower;
+          continue;
+        }
+      } else if (cells.length >= 2 && /^P\d/i.test(cells[0])) {
+        result.push({
+          property: normalizePropertyName(cells[0]),
+          verdict: (cells[1] || '').replace(/\*\*/g, '').trim().toUpperCase(),
+          tools: cells[2] || '',
+          evidence: cells[3] || cells.slice(3).join(' | ') || '',
+        });
+      } else if (inTable && !/^\|[\s-|]+\|?$/.test(line)) {
+        // Non-data row encountered — stop (table ended)
+        if (cells.length > 0 && cells[0] && !/^P\d/i.test(cells[0])) {
+          inTable = false;
+        }
+      }
+    } else if (inTable && line === '') {
+      inTable = false;
+    }
+  }
+  return result;
+}
+
+/**
+ * Extract the composed verdict declaration from Section 4.
+ * Matches "Composed verdict: <X>" or "**Composed verdict**: <X>" with optional bold/asterisks.
+ * Returns the verdict label (e.g., "LIVE-VERIFIED", "MOCK-VERIFIED + DEFERRED-PROPER") or null.
+ */
+function extractComposedVerdict(s4Block) {
+  if (!s4Block) return null;
+  // Match the LAST occurrence (in case initial verdict is mentioned then upgraded)
+  const matches = [...s4Block.matchAll(
+    /\*?\*?[Cc]omposed [Vv]erdict\*?\*?\s*:?\s*\*?\*?([A-Z_][A-Z_ -]*(?:\s*\+\s*[A-Z_][A-Z_ -]*)?)/g
+  )];
+  if (matches.length === 0) return null;
+  const last = matches[matches.length - 1];
+  return last[1].trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+/**
+ * Decide if a per-property verdict's evidence cites a LIVE tool.
+ * Used to detect mock-only rationalization (the FIX-001 failure mode).
+ */
+function evidenceCitesLiveTool(toolsAndEvidence) {
+  if (!toolsAndEvidence) return false;
+  const text = String(toolsAndEvidence).toLowerCase();
+  // Live-tool keywords from PROJECT_PROFILE.md §H tool catalog (project-agnostic)
+  const liveKeywords = [
+    'playwright', 'clasp run', 'gcp log', 'cloud logging', 'bigquery', 'bq query',
+    'live walk', 'live dev', 'real dev', 'real drive', 'real server',
+    'screenshot', 'har capture', 'side-channel', 'side channel',
+    'persistence query', 'persistence-layer query', 'integration test',
+    'tier1', 'tier2', 'tier3', 'tier4', 'fault injection', 'chaos',
+    'modifiedtime', 'modified time', 'log assertion', 'walk via',
+    'deploy', 'browser_evaluate', 'page.evaluate', 'dom assertion',
+  ];
+  return liveKeywords.some(kw => text.includes(kw));
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +844,99 @@ function checkGate3(session, fixId, scope, issueFilePath, options = {}) {
     status: s4 && s4.hasGatePassage ? 'PASS' : 'FAIL',
     detail: s4?.hasGatePassage ? 'Found' : 'Missing — write "GATE 3 PASSED [timestamp]"',
   });
+
+  // ---------------------------------------------------------------------------
+  // 7. PROPERTY-VERDICT ASSERTION (v2 — closes the rationalization loophole)
+  // ---------------------------------------------------------------------------
+  // Reference: SKILL.md Gate 3 Step 3. Cross-references Section 2.5 yes properties
+  // to Section 4 per-property verdicts to catch the FIX-001 failure mode where an
+  // agent stamps MOCK-VERIFIED with code-reading evidence despite LIVE-required
+  // properties firing yes.
+
+  const yesProperties = (s2?.universalProperties || []).filter(p => p.yes);
+  const perPropertyVerdicts = s4?.perPropertyVerdicts || [];
+  const composedVerdict = s4?.composedVerdict || '';
+  const LIVE_REQUIRED = ['P1', 'P2A', 'P2B', 'P3', 'P5'];
+  const liveTriggeredYes = yesProperties
+    .map(p => p.property.toUpperCase())
+    .filter(p => LIVE_REQUIRED.includes(p));
+
+  // 7a. Section 2.5 must be present when fix is non-trivial
+  // (Skip if Section 2.5 has no rows at all — the agent may not have populated it
+  // yet at gate-1 time. At gate-3 time, an empty Section 2.5 is itself a violation.)
+  if (s2?.universalProperties && s2.universalProperties.length === 0) {
+    checks.push({
+      name: 'Section 2.5 Universal Properties table populated',
+      status: 'FAIL',
+      detail: 'Section 2.5 has no property rows. Every fix must answer P1–P13 yes/no with one-line justification per Phase 1.4.',
+    });
+  }
+
+  // 7b. Each yes property has a per-property verdict in Section 4
+  if (yesProperties.length > 0) {
+    const perPropertyMap = new Map(
+      perPropertyVerdicts.map(v => [v.property.toUpperCase(), v])
+    );
+    const missingVerdicts = yesProperties.filter(p =>
+      !perPropertyMap.has(p.property.toUpperCase())
+    );
+    checks.push({
+      name: 'Section 4 has per-property verdict for each yes property',
+      status: missingVerdicts.length === 0 ? 'PASS' : 'FAIL',
+      detail: missingVerdicts.length === 0
+        ? `${perPropertyVerdicts.length} per-property verdict(s) cover ${yesProperties.length} yes propert${yesProperties.length === 1 ? 'y' : 'ies'}`
+        : `Missing per-property verdict for: ${missingVerdicts.map(p => p.property).join(', ')}. Section 2.5 fired yes; Section 4 must have a verdict row citing tools + evidence for each.`,
+    });
+  }
+
+  // 7c. Composed verdict reflects LIVE-required properties
+  if (liveTriggeredYes.length > 0) {
+    const composed = composedVerdict || '';
+    // Acceptable composed verdicts when LIVE-required fired:
+    //   LIVE-VERIFIED [+ DEFERRED-PROPER]
+    //   LIMITED-VERIFIED [+ DEFERRED-PROPER]   (only if §H is empty for the property)
+    //   OUT_OF_BAND_VERIFICATION_REQUIRED      (capability-boundary category fired)
+    const acceptable = /LIVE-VERIFIED|LIMITED-VERIFIED|OUT_OF_BAND/.test(composed);
+    const isMockOnly = /^MOCK-VERIFIED(\s*\+|$)/.test(composed) || composed === 'MOCK-VERIFIED';
+    checks.push({
+      name: `Composed verdict reflects LIVE-required properties (${liveTriggeredYes.join(', ')} fired)`,
+      status: acceptable ? 'PASS' : 'FAIL',
+      detail: acceptable
+        ? `Composed verdict: ${composed}`
+        : isMockOnly
+          ? `Composed = ${composed} but ${liveTriggeredYes.join('/')} fired yes in Section 2.5. Each LIVE-required property needs live-tool evidence. Either: (a) run a §H live tool, (b) demote to LIMITED-VERIFIED with §H-empty justification per property, or (c) stamp OUT_OF_BAND if a §I capability-boundary category applies. "Existing boundaries are live-covered by the wider integration suite" is a forbidden rationalization (Red Flag).`
+          : composed
+            ? `Unrecognized composed verdict: "${composed}"`
+            : 'Composed verdict line missing from Section 4. Write "Composed verdict: LIVE-VERIFIED" (or LIMITED/OUT_OF_BAND/MOCK-VERIFIED + DEFERRED-PROPER as appropriate).',
+    });
+  }
+
+  // 7d. Per-property evidence for each LIVE-required PASS verdict cites a live tool
+  // (otherwise LIMITED-VERIFIED is the correct verdict, not PASS)
+  for (const v of perPropertyVerdicts) {
+    if (!LIVE_REQUIRED.includes(v.property.toUpperCase())) continue;
+    if (v.verdict !== 'PASS') continue; // FAIL/LIMITED-VERIFIED are honest already
+    const combined = `${v.tools} ${v.evidence}`;
+    if (!evidenceCitesLiveTool(combined)) {
+      checks.push({
+        name: `Per-property evidence for ${v.property} is not mock-only`,
+        status: 'FAIL',
+        detail: `${v.property} verdict=PASS but evidence cites only mock-tier tools: tools="${v.tools.slice(0, 80)}", evidence="${v.evidence.slice(0, 80)}". For LIVE-required properties, PASS requires at least one of: Playwright, clasp run, GCP log, BigQuery, live walk, screenshot, side-channel check, integration test (tier1+). If §H has no live tool for ${v.property} in this project, demote verdict to LIMITED-VERIFIED instead of PASS.`,
+      });
+    }
+  }
+
+  // 7e. PROVISIONAL fix-type sanity: if Section 3 has the literal token,
+  // composed verdict must end in DEFERRED-PROPER (not plain LIVE-VERIFIED)
+  if (s3?.provisionalToken && composedVerdict) {
+    if (!/DEFERRED-PROPER/.test(composedVerdict)) {
+      checks.push({
+        name: 'PROVISIONAL fix has DEFERRED-PROPER composed verdict',
+        status: 'FAIL',
+        detail: `Section 3 has PROVISIONAL_PROPER_FIX_REQUIRED token but composed verdict is "${composedVerdict}" without "+ DEFERRED-PROPER" suffix. Update to "${composedVerdict} + DEFERRED-PROPER".`,
+      });
+    }
+  }
 
   return checks;
 }

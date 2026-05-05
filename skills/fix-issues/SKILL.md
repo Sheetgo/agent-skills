@@ -229,6 +229,7 @@ This pattern — detect, compose verdict, dispatch tools, cross-check — is the
 | "I think the tool would say PASS" | Predicting tool output is not running the tool. Run it. Read the actual output. Cite it in Section 4. |
 | "VERIFIED-BY-PRECEDING-FIX, skip Phase 4" | Phase 4.1 still runs. VERIFIED-BY-PRECEDING-FIX still requires Section 2.5 + Section 4 per-property verdicts citing the preceding fix's commit hash. Inheriting verification without re-running is not allowed. |
 | Describes the fix as "a band-aid" or "temporary" in prose without writing the literal `PROVISIONAL_PROPER_FIX_REQUIRED:` token | Phase 5.0.5 grep's for the LITERAL token. Paraphrase bypasses the scan silently. If fix_type is PROVISIONAL, write the EXACT string `PROVISIONAL_PROPER_FIX_REQUIRED: <description>` to Section 3. No paraphrase, no synonym, no narrative substitute. |
+| "Fix consumes existing boundaries already exercised by other code" / "the integration suite covers it" / "the boundaries themselves are live-covered by the wider integration suite" | This is the **inheritance rationalization** — the FIX-001 (2026-05-04) failure mode. P1/P2a/P3/P5 evidence must come from THIS fix's verification, not from "code elsewhere uses these surfaces". A new consumer of an existing boundary still introduces new behavior at that consumer; live-tool evidence at the new consumer is non-negotiable. If §H lists a tool, run it. If §H is empty, demote the property's verdict to LIMITED-VERIFIED. Do not stamp PASS on inherited coverage. Script v2 (Gate 3) blocks this mechanically. |
 
 ## CHECKPOINT PROTOCOL (MANDATORY)
 
@@ -813,9 +814,9 @@ node ~/.claude/skills/fix-issues/project-setup/scripts/check-fix-gate.cjs <sessi
 **If FAIL** → fix every failing check, re-run until PASS.
 **If PASS** → continue to Step 3.
 
-**Step 3 — Property-verdict assertion** (MANDATORY, in addition to the script):
+**Step 3 — Property-verdict assertion** (MANDATORY — enforced by script v2):
 
-The current `check-fix-gate.cjs` (v1) checks structural completeness only. It does NOT yet parse Section 2.5 / Section 4 cross-references. Until script v2 lands, this assertion is performed by the agent — and is non-negotiable. Treat it as you would the script: cannot rationalize past failures.
+The `check-fix-gate.cjs` script (v2+) parses Section 2.5 yes properties and Section 4 per-property verdicts mechanically and FAILs Gate 3 when any of the assertions below are violated. The agent MUST also walk through them manually before invoking the script — the script catches the gross violations but the agent's read confirms evidence quality.
 
 Read FIX-XXX.md Section 2.5 (yes properties) and Section 4 (composed verdict + per-property verdicts). Verify mechanically (not by judgment):
 
@@ -848,7 +849,15 @@ If FIX-XXX.md Section 3 contains `PROVISIONAL_PROPER_FIX_REQUIRED:` → verify c
 
 4. Once Section 4 has actual tool outputs for every yes property, re-run the assertion. If now passing → continue to Step 4.
 
-**Script-update note (future work)**: Extend `check-fix-gate.cjs` `checkGate3()` to (a) parse Section 2.5 to collect yes properties; (b) scan Section 4 for a per-property verdict row per yes property; (c) enforce that LIVE-VERIFIED composed verdict is present when any of P1/P2a/P2b/P3/P5 fired yes; (d) flag verdict-demotion to LIMITED-VERIFIED that lacks a §H-empty justification. Tracked as a separate enhancement issue, but the assertion above is enforced by the agent today.
+**Script v2 enforcement** (active as of skill v4.1): `check-fix-gate.cjs` now performs five mechanical assertions:
+
+1. **Section 2.5 populated**: every fix has a Universal Properties table with P1–P13 answered yes/no. Empty table → FAIL.
+2. **Per-property verdict coverage**: every yes property in Section 2.5 has a corresponding row in Section 4's per-property verdicts table. Missing → FAIL.
+3. **Composed verdict matches yes properties**: if P1/P2a/P2b/P3/P5 fired yes, composed verdict must be `LIVE-VERIFIED`, `LIMITED-VERIFIED`, or `OUT_OF_BAND_VERIFICATION_REQUIRED`. `MOCK-VERIFIED` → FAIL with the rationalization warning.
+4. **Live-tool evidence per LIVE-required PASS**: for each LIVE-required property whose verdict = PASS, `tools used` or `evidence` must cite at least one live keyword (Playwright, clasp run, GCP log, BigQuery, live walk, screenshot, side-channel, integration test, etc.). Mock-only evidence → FAIL with explicit "demote to LIMITED-VERIFIED" guidance.
+5. **PROVISIONAL DEFERRED-PROPER suffix**: if Section 3 contains the literal `PROVISIONAL_PROPER_FIX_REQUIRED:` token, composed verdict must end in `+ DEFERRED-PROPER`. Missing → FAIL.
+
+These five assertions close the gap that allowed the FIX-001 session (2026-05-04 in the as-add-on repo) to stamp MOCK-VERIFIED with code-reading evidence despite P1/P2a/P3/P5 firing yes. The script will now block that path mechanically.
 
 **For batched issues**: Run the script AND the property-verdict assertion SEPARATELY for EACH issue. One batch-wide test run does not substitute for per-issue gate checks. Example for a 3-issue batch:
 ```
@@ -981,19 +990,31 @@ Before finalizing, scan the session directory for two machine-readable tokens th
 1. PROVISIONAL_PROPER_FIX_REQUIRED:
    grep -rn "PROVISIONAL_PROPER_FIX_REQUIRED" <session-dir>/
 
-   For each match:
+   Read deferred-tracking locations from PROJECT_PROFILE.md `deferred_fixes_locations`
+   (top-level YAML list of paths relative to project root). If the profile is missing
+   or doesn't define this field, default to `[".claude/DEFERRED_FIXES.md"]`.
+
+   For each PROVISIONAL_PROPER_FIX_REQUIRED match in the session:
      Verify EITHER:
        (a) A follow-up FIX-XXX-PROPER issue exists in this session's registry, OR
-       (b) An entry exists in <project-root>/.claude/DEFERRED_FIXES.md with:
+       (b) An entry exists in ANY of the configured deferred-tracking locations
+           with all of:
            - issue_id (the original FIX-XXX)
            - description matching the PROVISIONAL_PROPER_FIX_REQUIRED text
            - acceptance_criteria
            - target_session (when proper fix should land)
 
    If NEITHER (a) NOR (b) exists for any match → BLOCK finalization.
-   Either register the follow-up issue OR add the DEFERRED_FIXES.md entry before
-   continuing. The session cannot finalize as "Complete" with a band-aid that
-   has no follow-up tracking.
+   Either register the follow-up issue OR add an entry to one of the configured
+   locations before continuing. The session cannot finalize as "Complete" with
+   a band-aid that has no follow-up tracking.
+
+   Common project conventions:
+   - Default: `.claude/DEFERRED_FIXES.md`
+   - Sheetgo projects: `docs/deferred-items.md` (canonical "Future Improvements"
+     file; pre-existing convention)
+   - Linear/Jira-integrated projects: tracker-issue link in `.claude/DEFERRED_FIXES.md`
+     pointing at an external issue, with the four required fields embedded
 
 2. OUT_OF_BAND_VERIFICATION_REQUIRED:
    grep -rn "OUT_OF_BAND_VERIFICATION_REQUIRED" <session-dir>/
