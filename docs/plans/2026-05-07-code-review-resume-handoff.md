@@ -320,3 +320,62 @@ Cleanup tasks deferred from MVP (low priority):
 - Add precedence rule for FIX FIRST vs DEFER + DOCUMENT to the verdict table.
 
 The branch is now clean and shippable. Next: merge this branch (it's mixed-scope with the in-flight fix-issues v4 work, so the merge should split the code-review skill from the fix-issues v4 work into separate PRs OR ship as one) — that's a brainstorming question for the user, not a writing-plans question.
+
+---
+
+## Phase 4 execution log (2026-05-08, same-day)
+
+**Status:** Phase 4 complete. PreToolUse hook for `git push` blocking is wired up in 6 commits.
+
+The MVP boundary called Phase 4 a follow-up. The user explicitly opted to do it in the same session immediately after MVP wrap-up, so it landed on the same branch (HEAD now `f61b43d`).
+
+### Per-task commits
+
+| Sub-task | Subject | Commit |
+|---|---|---|
+| P4.1 | Add check-marker.cjs Node helper for Phase 4 git-push gate | `4b4f102` |
+| P4.2 | Add git-push-gate-hook.sh PreToolUse hook for code-review | `5e67034` |
+| P4.3 | Add settings-fragment.json for per-project hook registration | `705c46a` |
+| P4.4 | Add per-project install README for code-review hook | `522d3d6` |
+| P4.5 | Add SETUP.md for end-to-end code-review skill install | `900f7e8` |
+| P4.6 | Show explicit marker-write command on PUSH READY verdict | `f61b43d` |
+
+### What's installed
+
+- `skills/code-review/scripts/check-marker.cjs` — Node helper that resolves HEAD via `execFileSync` and checks for `.git/code-review-passed-<sha>`. Exit 0 / 1 / 2.
+- `skills/code-review/project-setup/git-push-gate-hook.sh` — PreToolUse hook reading Claude Code's stdin JSON, filtering `Bash(git push:*)`, emitting structured `permissionDecision: deny` when marker is missing. Two bypass paths: `[skip-review]` commit-message marker + `CODE_REVIEW_BYPASS=1` env var. Fail-open when the user-level skill isn't installed.
+- `skills/code-review/project-setup/settings-fragment.json` — JSON snippet for per-project install. Includes `_comment` documenting merge guidance.
+- `skills/code-review/project-setup/README.md` — per-project install steps, bypass paths, uninstall, troubleshooting matrix.
+- `skills/code-review/SETUP.md` — user-level + per-project install, prerequisites (Codex CLI / gh / Node), verification commands, troubleshooting matrix.
+- `skills/code-review/SKILL.md` updated — Layer 1 BOTH-CLEAN exit short-circuit now shows the explicit marker-write command (`touch "$(git rev-parse --git-dir)/code-review-passed-$(git rev-parse HEAD)"`).
+
+### Smoke-tested paths (all pass)
+
+- No marker → hook denies with structured deny JSON.
+- Marker present → hook allows silently.
+- `CODE_REVIEW_BYPASS=1 git push` → hook allows silently.
+- `[skip-review]` in latest commit message → hook allows silently.
+- `git status` and other non-push commands → silent passthrough.
+- `git status && git push` (compound) → correctly BLOCKED.
+- `echo git push` (literal in echo arg) → correctly does NOT trigger.
+- `GIT_SSH_COMMAND="..." git push` (env-prefixed) → correctly triggers.
+- Non-git CWD → fail-open with diagnostic log entry.
+
+Diagnostic log path: `/tmp/code-review-hook-diag.log`. Every decision (MATCH / BLOCK / ALLOW / BYPASS / FAIL) is logged with timestamp.
+
+### One Minor finding deferred
+
+- Heredoc body containing the literal substring `git push` would false-positive trigger via the regex. In practice extremely unlikely (nobody writes `cat <<EOF\ngit push\nEOF`), and the fail-open + env-var bypass mitigate any real-world hit. Not blocking.
+
+### Next steps
+
+Phase 5 (first-adoption) is what remains:
+
+1. Symlink the user-level skill: `ln -s ~/Development/Sheetgo/agent-skills/skills/code-review ~/.claude/skills/code-review` and `ln -s ~/Development/Sheetgo/agent-skills/commands/code-review.md ~/.claude/commands/code-review.md`. Per `SETUP.md`.
+2. Optionally install the per-project hook in `as-add-on` per `project-setup/README.md`.
+3. Run the skill on a real branch in `as-add-on` (e.g., the next time you'd otherwise run a manual review) and report findings against `agent-skills`.
+
+Also still deferred (low priority):
+- `.gitkeep` cleanup in `prompts/`, `scripts/`, `project-setup/`, `examples/`.
+- `superpowers:code-reviewer` naming-ambiguity clarification in SKILL.md.
+- FIX FIRST vs DEFER + DOCUMENT precedence rule for P2+ REPRODUCED + out-of-family edge case.

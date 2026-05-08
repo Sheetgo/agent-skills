@@ -93,8 +93,21 @@ detected. Consider running /security-review in parallel before final verdict."
 If both reviewers return zero claims:
 - Output: **PUSH READY** with one-line summary.
 - Skip Layers 2-4. No subagents dispatched.
-- Write marker `.git/code-review-passed-<sha>` for the hook to consume.
+- Write marker `.git/code-review-passed-<sha>` for the hook to consume:
+  ```bash
+  touch "$(git rev-parse --git-dir)/code-review-passed-$(git rev-parse HEAD)"
+  ```
+  The marker filename embeds the HEAD SHA at time of approval. The
+  per-project hook (see `project-setup/git-push-gate-hook.sh` and `SETUP.md`)
+  reads HEAD and checks for a matching marker; if HEAD has moved since
+  approval, the marker is stale and the gate blocks until the skill is
+  re-run on the new HEAD.
 - Done.
+
+The same marker write applies to **PUSH READY** verdicts produced after
+Layers 2–4 have run (e.g., all surviving claims dropped at L2/L3 or hit
+NOT_REPRODUCIBLE / OUT_OF_SCOPE / INTENTIONAL at L4). Always write the
+marker on PUSH READY, regardless of which layer produced the verdict.
 
 ## If claims found
 
