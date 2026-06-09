@@ -62,7 +62,7 @@ Ask user via AskUserQuestion: **Multi-Agent (Parallel)** (recommended) or **Sing
 
 ### Agent Dispatch (Parallel Mode)
 
-Use a **single message with multiple Task tool calls**. Each `general-purpose` agent gets:
+Use a **single message with multiple Agent tool calls**. Each `general-purpose` agent gets:
 1. Endpoint details + **exact source file path + line number**
 2. **Deep Endpoint Analysis** — tracing checklist from `reference.md` + test ordering from this skill's section below. Agent MUST trace full source before writing YAML
 3. Expression syntax, YAML template, and naming conventions from `reference.md` (included in prompt)

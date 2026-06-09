@@ -53,8 +53,8 @@ Agent may choose any strategy but MUST announce and explain the choice.
 
 | Decision | Options |
 |----------|---------|
-| Grouping strategy | Single / Time cluster / Prefix / Logical |
-| Time cluster granularity | Hour gaps / Session gaps / Day |
+| Grouping strategy | Time cluster (default) / Single / Prefix / Logical (not advised) |
+| Time cluster granularity | Session gaps (default) / Hour gaps / Day |
 | Commit timestamp | Last (default) / First / Middle |
 | Confirm preview | Proceed / Adjust / Cancel |
 | On failure | Rollback & retry / Rollback & stop / Ask me |
@@ -62,13 +62,13 @@ Agent may choose any strategy but MUST announce and explain the choice.
 
 ### Wizard Flow
 
-**Step 1: Grouping** (skip if simple case - auto-select prefix)
+**Step 1: Grouping** (skip if simple case - auto-select time clustering)
 ```
 How should I group these N commits?
+  ○ By time clustering - Group by work sessions (Recommended)
   ○ Single commit - All N → 1
-  ○ By time clustering - Based on when committed
-  ○ By commit prefix - Group feat/fix/test (Recommended)
-  ○ By logical change - Split shared files (advanced)
+  ○ By commit prefix - Group feat/fix/test
+  ○ By logical change - Split shared files (advanced, not advised)
 ```
 
 **Step 2: Timestamp** (if multiple groups)
@@ -83,20 +83,23 @@ What timestamp for each squashed commit?
 ```
 Preview: N commits → M groups
 
-1. feat: Add auth (9:00-9:30, 4 commits) → 9:30
-2. fix: Fix login (14:00-14:15, 2 commits) → 14:15
-3. test: Add tests (10:00-10:20, 2 commits) → 10:20
+1. feat: Add auth and login flow (9:00-10:30, 6 commits) → 10:30
+   feat: Add auth, test: Add auth tests, fix: Fix token refresh
+2. fix: Fix login validation and update docs (14:00-14:45, 3 commits) → 14:45
+   fix: Fix login, docs: Update API docs, chore: Lint cleanup
 
   ○ Proceed
   ○ Adjust grouping
   ○ Cancel
 ```
 
-**Step 3b: Adjust** (if selected)
+Each group shows: synthesized title, time range, commit count, and the original commit subjects for context.
+
+**Step 3b: Adjust** (if selected — then loop back to Step 3 with new results)
 ```
 What would you like to change?
   ○ Grouping strategy (currently: [current])
-  ○ Clustering granularity (currently: [current])
+  ○ Clustering granularity (currently: [current]) ← only if time clustering
   ○ Timestamp selection (currently: [current])
   ○ Start over from beginning
 ```
@@ -109,37 +112,63 @@ What would you like to change?
 
 | Criteria | Simple | Complex |
 |----------|--------|---------|
-| File overlap | Each file in exactly 1 prefix group | Same file in 2+ prefix groups |
 | Commit count | ≤ 10 commits | > 10 commits |
 | Time span | Same day | Multiple days |
+| Time clusters | 1–3 natural session groups | 4+ session groups |
 
 **Complex if ANY criteria is complex.**
 
-- **Simple case:** Auto-select commit prefix grouping, show preview, confirm
-- **Complex case:** Show wizard, ask user to choose strategy
+- **Simple case:** Auto-select time clustering (session gaps), default timestamp (last), show preview, confirm
+- **Complex case:** Show wizard, ask user to choose strategy (time clustering still recommended)
 
 ### Grouping Options
 
 | Option | Description | Risk |
 |--------|-------------|------|
+| **Time clustering** | Group by work sessions (default) | Low |
 | **Single commit** | All commits → 1 | None |
-| **Time clustering** | Group by work sessions | Low |
-| **Commit prefix** | Group by feat/fix/test (default) | Low |
-| **Logical change** | Split files with `git add -p` | Medium |
+| **Commit prefix** | Group by feat/fix/test | Low |
+| **Logical change** | Split files with `git add -p` | High — not advised |
+
+**Why time clustering is the default:** Work sessions naturally group related changes. Commits made close together almost always belong to the same logical unit of work. This avoids the complexity of trying to untangle shared files across prefix groups.
+
+**Why logical change is not advised:** When the same file is modified for different tasks/goals across commits, the orchestration required to split those changes is extremely complex and error-prone. Prefer time clustering and let the commit message explain the mixed concerns.
 
 ### Time Clustering Granularity
 
 | Granularity | Logic |
 |-------------|-------|
 | Hour gaps | New group when gap > 1 hour |
-| Session gaps | New group when gap > 4 hours |
+| Session gaps | New group when gap > 4 hours (default — matches typical break between work sessions) |
 | Day | New group on different calendar day |
 
-### Prefix Grouping Rules
+### Clustering Algorithm
 
-1. Extract prefix: `feat:`, `fix:`, `test:`, `docs:`, `chore:`
-2. Group consecutive commits with same prefix family
-3. Determine dominant prefix per group:
+**BEFORE any git reset**, compute the time clusters:
+
+```bash
+# 1. Get commits with timestamps (epoch seconds), chronological order
+git log "$MERGE_BASE"..HEAD --format="%H %at" --reverse
+```
+
+2. Walk the sorted list. Compare each commit's timestamp to the previous commit's.
+3. If the gap exceeds the threshold (e.g., 4 hours = 14400 seconds), start a new group.
+4. For each group, record the commits and the files they touched:
+   ```bash
+   # For each commit in the group, get its files
+   git diff-tree --no-commit-id --name-only -r <commit-hash>
+   ```
+
+**Edge case — 1 group:** If all commits fall within a single session, inform the user and proceed as a single commit: `"Time clustering produced 1 group (all commits within same session). Proceeding as single commit."`
+
+**Edge case — file overlap across clusters:** If the same file appears in multiple time clusters, assign it to the **last cluster** that touched it. The earlier cluster's commit message should note that later work continued in that file.
+
+### Prefix Dominance Rules
+
+Applies to ALL grouping strategies when choosing the commit prefix for a squashed commit containing mixed types:
+
+1. Collect commit prefixes within the group: `feat:`, `fix:`, `test:`, `docs:`, `chore:`
+2. Determine dominant prefix:
    - `feat` + anything → `feat:` (feature includes its tests/fixes)
    - `fix` + `test` → `fix:` (fix includes its verification)
    - `test` only → `test:`
@@ -265,7 +294,7 @@ fi
 
 ```bash
 BRANCH=$(git branch --show-current)
-SANITIZED_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+SANITIZED_BRANCH=$(echo "$BRANCH" | sed 's#/#%2F#g')   # percent-encode "/" (feat/x ≠ feat-x)
 
 if echo "$BRANCH" | grep -qE "^(main|master)$"; then
   echo "Error: Cannot squash on main/master branch."
@@ -328,60 +357,93 @@ fi
 
 ## 8. Backup Before Squash
 
+**Use simple, single-purpose commands** — avoid chaining with `&&`. Each operation should be a separate Bash call.
+
 ```bash
-SESSION_DIR=".claude/sessions/${SANITIZED_BRANCH}"
-mkdir -p "$SESSION_DIR"
+# 1. Create session directory
+mkdir -p ".claude/sessions/${SANITIZED_BRANCH}"
 
-# Create backup tag
-BACKUP_TAG="_squash-backup-$(date +%s)"
-git tag "$BACKUP_TAG"
+# 2. Create backup tag
+git tag "_squash-backup-<timestamp>"
 
-# ANNOUNCE
-echo "📦 Backup created: $BACKUP_TAG"
+# 3. Create bundle for undo
+git bundle create ".claude/sessions/${SANITIZED_BRANCH}/pre-squash.bundle" "$MERGE_BASE"..HEAD
 
-# Create bundle for undo
-git bundle create "$SESSION_DIR/pre-squash.bundle" "$MERGE_BASE"..HEAD
-
-# Record in-progress state
-cat > "$SESSION_DIR/squash-in-progress.json" << EOF
-{
-  "status": "started",
-  "backupTag": "$BACKUP_TAG",
-  "originalHead": "$(git rev-parse HEAD)",
-  "mergeBase": "$MERGE_BASE",
-  "startTime": "$(date -Iseconds)"
-}
-EOF
+# 4. Record in-progress state (use Write tool, not Bash)
+# Write squash-in-progress.json with: status, backupTag, originalHead, mergeBase, startTime
 ```
+
+**ANNOUNCE:** `"📦 Backup created: _squash-backup-XXX"`
 
 ---
 
 ## 9. Execution
 
+### 9.1 Pre-compute (BEFORE reset)
+
+**CRITICAL:** Collect all grouping data before any destructive operation.
+
 ```bash
-# ANNOUNCE strategy
-echo "📋 Strategy: soft reset. Reason: default, all changes preserved in staging"
+# ANNOUNCE grouping + git strategy
+# "📋 Grouping: time clustering (session gaps). Git strategy: soft reset."
 
-# 1. Soft reset to merge base
+# 1. Compute time clusters (see Clustering Algorithm in Section 3)
+git log "$MERGE_BASE"..HEAD --format="%H %at" --reverse
+# Record per-group: commit hashes, files touched, timestamps
+
+# 2. For each group, collect its file list
+git diff-tree --no-commit-id --name-only -r <commit-hash>
+
+# 3. Resolve file overlaps: if a file appears in multiple groups,
+#    assign it to the LAST group that touched it.
+#    Remove it from earlier groups' file lists.
+```
+
+### 9.2 Reset and Rebuild
+
+**IMPORTANT: Use simple, single-purpose commands** — one git operation per Bash call. This ensures commands match the user's permission allow-list and avoids approval prompts. Do NOT chain multiple git operations with `&&` in a single command.
+
+```bash
+# Step 1: Soft reset to merge base
 git reset --soft "$MERGE_BASE"
-echo "🔄 Reset to merge base, all changes staged"
 
-# 2. Create consolidated commits with preserved timestamps
-# For each group:
-#   ANNOUNCE: "✅ Creating commit N of M: <message>"
-#   GIT_AUTHOR_DATE="<timestamp>" GIT_COMMITTER_DATE="<timestamp>" \
-#   git commit -m "<prefix>: <message>"
+# Step 2: Unstage everything (keep changes in working tree)
+git reset HEAD
 
-# 3. Verify and SHOW diff to user
-git status --porcelain  # Must be empty
+# Step 3: For each group (in chronological order):
+
+# 3a. Stage only this group's files
+git add <file1> <file2> ...
+
+# 3b. Commit with preserved timestamp (separate command)
+GIT_AUTHOR_DATE="<timestamp>" GIT_COMMITTER_DATE="<timestamp>" \
+git commit -m "<prefix>: <message>"
+
+# Repeat 3a-3b for all groups
+
+# Step 4: Verify no unstaged files remain
+git status --porcelain
+```
+
+**If single group (or single commit strategy):** Skip the unstage/re-stage dance. After `git reset --soft`, commit everything directly:
+```bash
+git reset --soft "$MERGE_BASE"
+GIT_AUTHOR_DATE="<timestamp>" GIT_COMMITTER_DATE="<timestamp>" \
+git commit -m "<prefix>: <message>"
+```
+
+### 9.3 Verify and Record
+
+```bash
+# 1. Verify and SHOW diff to user
 git diff "$BACKUP_TAG" HEAD  # Run and SHOW output (should be empty)
 # If diff is empty: "No output - the codebase is identical. ✅"
 echo "✅ Verification passed"
 
-# 4. Update squash state
+# 2. Update squash state
 rm "$SESSION_DIR/squash-in-progress.json"
 
-# 5. Record successful squash
+# 3. Record successful squash
 cat > "$SESSION_DIR/last-squash.json" << EOF
 {
   "squashedAt": "$(date -Iseconds)",
@@ -480,6 +542,16 @@ This is just copying commit subjects - it loses context and is hard to understan
 | Bullet points | Specific changes with WHY when non-obvious |
 | Footer | Claude Code link + Co-Authored-By |
 
+### Commit Messages for Time-Clustered Groups
+
+Time clusters often contain mixed prefixes (e.g., a `feat:` + `fix:` + `test:` in one session). To choose the prefix:
+
+1. Apply the **Prefix Dominance Rules** from Section 3 to the commits within the cluster
+2. The commit title should synthesize what the session accomplished, not list individual commits
+3. The commit body follows the same narrative structure guidelines above
+
+**Example:** A session with 3 feat commits, 1 fix, and 2 test commits → `feat:` prefix, with the body noting the fix and tests in context.
+
 ### Without ticket:
 
 Same format, just omit the `(ref XX-NNNN)` from title.
@@ -513,5 +585,5 @@ After squash completes, inform user:
 🎉 Squash complete! Backups preserved for undo.
 
 To undo this squash:  /undo-squash
-To clean up backups:  /cleanup-squash
+To clean up backups:  /squash-cleanup
 ```

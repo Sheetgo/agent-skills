@@ -1,7 +1,7 @@
 # Squash Commits Improvements Design
 
 **Date:** 2026-01-23
-**Status:** FINAL
+**Status:** FINAL (revised 2026-02-16 — default changed from prefix to time clustering)
 **Skill:** squash-commits
 
 ## Summary
@@ -53,18 +53,18 @@ The agent is free to choose any git strategy but MUST announce and explain.
 
 1. Analyze commits (count, files, timestamps)
 2. Detect complexity
-3. Simple case → auto-select **commit prefix**, show preview, confirm
+3. Simple case → auto-select **time clustering (session gaps)**, show preview, confirm
 4. Complex case → wizard asks user
 
 **Simple vs Complex detection:**
 
 | Criteria | Simple | Complex |
 |----------|--------|---------|
-| File overlap | Each file in exactly 1 prefix group | Same file in 2+ prefix groups |
 | Commit count | ≤ 10 commits | > 10 commits |
 | Time span | Same day | Multiple days |
+| Time clusters | 1–3 natural session groups | 4+ session groups |
 
-**Complex if ANY criteria is complex.** Default strategy for simple = commit prefix (respects user's original intent).
+**Complex if ANY criteria is complex.** Default strategy for simple = time clustering with session gaps.
 
 **Grouping options:**
 
@@ -210,7 +210,7 @@ What should I do?
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Strategy restriction | None - all strategies allowed | Flexibility over safety; transparency compensates |
-| Default grouping | Commit prefix | Respects user's original intent |
+| Default grouping | Time clustering (session gaps) | Work sessions naturally group related changes; avoids complexity of untangling shared files across prefix groups |
 | Complex detection | File overlap OR >10 commits OR multi-day | Covers ambiguous cases |
 | Time preservation | Last commit time (default) | Most natural - represents when work finished |
 | Adjust flow | Sub-menu | Efficient - user targets specific change |
@@ -222,8 +222,8 @@ What should I do?
 
 | # | Scenario | Expected Behavior |
 |---|----------|-------------------|
-| 1 | Simple case (3 commits, same prefix) | Auto-selects prefix grouping, shows preview |
-| 2 | Complex case (file overlap) | Triggers wizard, asks user |
+| 1 | Simple case (3 commits, same day) | Auto-selects time clustering, shows preview |
+| 2 | Complex case (4+ session groups or >10 commits) | Triggers wizard, asks user |
 | 3 | Time clustering | Groups by hour/session/day correctly |
 | 4 | Single commit | Handles gracefully |
 | 5 | Cancel mid-flow | Returns to clean state |

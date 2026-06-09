@@ -1,0 +1,7 @@
+- [P2] Avoid marking wizard dirty on probe-only flag updates — /Users/foo/repo/client/src/lib/validation/useFileTrashedProbe.ts:81
+  This hook writes flag via store action, but the action unconditionally sets
+  dirty in the store. As a result, simply opening can trigger unsaved-changes UX.
+
+- [P1] Emit destination-specific access code from shared opener — /Users/foo/repo/server/src/api-files.ts:725
+  The shared helper now hard-codes one error code for access failures, but is
+  also used by destination writes through getOrCreateDestinationSheet.

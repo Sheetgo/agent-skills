@@ -1,0 +1,16 @@
+{
+  "_comment": "Per-project hook registration for the code-review skill's git-push gate. Merge the 'hooks' block below into your project's .claude/settings.local.json. If a 'hooks' block already exists, append the PreToolUse[matcher=Bash] entry to its array. Prerequisites: ~/.claude/skills/code-review symlinked to the agent-skills repo (see the skill's SETUP.md).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/skills/code-review/project-setup/git-push-gate-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

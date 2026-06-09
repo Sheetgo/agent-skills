@@ -1,0 +1,12 @@
+# File-path patterns that indicate security-relevant changes.
+# One pattern per line. Lines starting with # are comments.
+# Patterns are matched case-insensitively against changed-file paths.
+
+auth
+crypto
+token
+permission
+session
+jwt
+sso
+oauth

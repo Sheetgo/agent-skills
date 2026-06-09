@@ -58,6 +58,7 @@ Use `AskUserQuestion` for each step:
 |------|-------------|----------------|
 | Feature | `feature/SG-1234-user-auth` | `feature/user-auth` |
 | Fix | `fix/SG-1234-login-bug` | `fix/login-bug` |
+| Chore | `chore/SG-1234-cleanup` | `chore/cleanup` |
 
 ### Worktree-Safe Creation
 
@@ -114,6 +115,6 @@ git checkout -b "$BRANCH_NAME" "$BASE"
 | Command | Purpose |
 |---------|---------|
 | `/start-work` | Branch creation wizard (this skill) |
-| `/cleanup-squash` | Remove squash backup tags |
+| `/squash-cleanup` | Remove squash backup tags |
 | `/squash-commits` | Consolidate commits before push |
 | `/undo-squash` | Restore pre-squash state |
