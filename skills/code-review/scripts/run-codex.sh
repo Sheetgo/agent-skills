@@ -14,11 +14,31 @@
 set -euo pipefail
 
 OUTPUT_FILE="${1:-/tmp/codex-review-output.txt}"
-CODEX_BINARY="/Applications/Codex.app/Contents/Resources/codex"
 
-# Verify prerequisites
-if [ ! -x "$CODEX_BINARY" ]; then
-  echo "ERROR: Codex CLI not found at $CODEX_BINARY" >&2
+# Resolve the Codex CLI binary in priority order, so the skill works on any
+# OS/machine — not just a macOS desktop-app install:
+#   1. $CODEX_BIN override (point this at your codex if it lives elsewhere)
+#   2. `codex` on PATH (the standard `npm i -g @openai/codex` / `brew install --cask codex` install)
+#   3. Known fallback locations (macOS desktop app + common bindirs)
+CODEX_BINARY=""
+if [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN}" ]; then
+  CODEX_BINARY="$CODEX_BIN"
+elif command -v codex >/dev/null 2>&1; then
+  CODEX_BINARY="$(command -v codex)"
+else
+  for cand in \
+    "/Applications/Codex.app/Contents/Resources/codex" \
+    "$HOME/.codex/bin/codex" \
+    "/opt/homebrew/bin/codex" \
+    "/usr/local/bin/codex"; do
+    if [ -x "$cand" ]; then CODEX_BINARY="$cand"; break; fi
+  done
+fi
+
+if [ -z "$CODEX_BINARY" ]; then
+  echo "ERROR: Codex CLI not found. Install it (npm i -g @openai/codex, or brew install --cask codex)" >&2
+  echo "       and run 'codex login', or set CODEX_BIN=/path/to/codex. See SETUP.md." >&2
+  echo "       Continuing without Codex → Layer 1 will run reviewer-only." >&2
   exit 2
 fi
 if ! command -v gh >/dev/null 2>&1; then

@@ -22,11 +22,36 @@ Adjust the source path if your `agent-skills` checkout lives elsewhere. After th
 
 | Prerequisite | Why | Where to get it |
 |---|---|---|
-| OpenAI Codex CLI installed at `/Applications/Codex.app/Contents/Resources/codex` | Layer 1 (a) parallel reviewer | Standard macOS install of the Codex desktop app |
+| OpenAI Codex CLI (any OS), authenticated | Layer 1 (a) parallel reviewer | See "Installing the Codex CLI" below |
 | `gh` CLI (GitHub CLI) authenticated to the relevant org | Layer 1 base detection (PR base lookup) and DEFER + DOCUMENT thread queries | `brew install gh && gh auth login` |
 | Node.js (any version with `fs` + `child_process`) | `parse-claims.cjs` and `check-marker.cjs` | Already required by most projects |
 
-If the Codex CLI is unavailable, the skill falls back to reviewer-only Layer 1 (single-signal). If `gh` is unavailable or unauthenticated, the diff base falls back to the remote's default branch (`origin/main`/`origin/master`) and PR-context drafts are skipped.
+If the Codex CLI is unavailable, the skill falls back to reviewer-only Layer 1 (single-signal) — Layer 1(b), the `code-reviewer` subagent, still runs, so the pipeline works without Codex (just no cross-validation). If `gh` is unavailable or unauthenticated, the diff base falls back to the remote's default branch (`origin/main`/`origin/master`) and PR-context drafts are skipped.
+
+### Installing the Codex CLI
+
+The Codex CLI is cross-platform (macOS / Linux / Windows-WSL). Install it whichever way you prefer:
+
+```bash
+npm install -g @openai/codex     # any OS with Node
+# or, on macOS:
+brew install --cask codex
+```
+
+Then authenticate once (Layer 1(a) can't run unauthenticated):
+
+```bash
+codex login        # opens a browser; or `codex login --help` for API-key auth
+codex doctor       # verifies install + auth + runtime health
+```
+
+**How the skill finds the binary** — `run-codex.sh` resolves it in this order, so it works regardless of where Codex lives:
+
+1. `$CODEX_BIN` — set this to an explicit path if your `codex` is somewhere unusual: `export CODEX_BIN=/path/to/codex`.
+2. `codex` on your `PATH` (the normal result of the installs above).
+3. Known fallback locations — the macOS desktop app (`/Applications/Codex.app/Contents/Resources/codex`), `~/.codex/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`.
+
+The wrapper runs `codex review --base <ref>`. If a future Codex version changes the review flags, check `codex review --help` and set `CODEX_BIN` to the matching build (or open a PR adjusting the wrapper).
 
 ### Verify user-level install
 
@@ -106,7 +131,8 @@ See `~/.claude/skills/code-review/project-setup/README.md` for hook-specific iss
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `/code-review` not recognized in fresh session | Symlinks missing | Re-run the `ln -s` commands above |
-| Codex CLI fails with "binary not found" | Path mismatch | The wrapper hard-codes `/Applications/Codex.app/Contents/Resources/codex` per design. Adjust if your install path differs and open a PR for the change. |
+| Codex CLI "not found" → Layer 1 runs reviewer-only | `codex` not installed or not discoverable | Install it (`npm i -g @openai/codex` / `brew install --cask codex`) and run `codex login`; or `export CODEX_BIN=/path/to/codex`. See "Installing the Codex CLI" above. |
+| Codex found but the review errors / quota hit | Not authenticated, or version flag drift | Run `codex login` + `codex doctor`; confirm the review flags with `codex review --help`. The skill degrades to reviewer-only on any Codex failure. |
 | `parse-claims.cjs: command not found` | `chmod +x` not applied | `chmod +x ~/.claude/skills/code-review/scripts/*.{sh,cjs}` |
 | Skill triggers don't fire automatically | YAML description not matching the user's prompt | Manual invocation via `/code-review` always works. The auto-trigger is best-effort; manual is the fallback. |
 
