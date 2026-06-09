@@ -173,6 +173,7 @@ def _find_matching_close(text, start, open_char, close_char):
     i = start + 1
     in_single = False
     in_double = False
+    in_ansi_c = False
 
     while i < len(text):
         c = text[i]
@@ -180,6 +181,16 @@ def _find_matching_close(text, start, open_char, close_char):
         if in_single:
             if c == "'":
                 in_single = False
+            i += 1
+            continue
+
+        if in_ansi_c:
+            # ANSI-C $'...' processes backslash escapes (e.g. \' does not close)
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_ansi_c = False
             i += 1
             continue
 
@@ -193,6 +204,11 @@ def _find_matching_close(text, start, open_char, close_char):
             continue
 
         if c == "\\":
+            i += 2
+            continue
+
+        if c == "$" and i + 1 < len(text) and text[i + 1] == "'":
+            in_ansi_c = True
             i += 2
             continue
 
@@ -216,6 +232,72 @@ def _find_matching_close(text, start, open_char, close_char):
         i += 1
 
     return -1
+
+
+def _first_token_end(text, start):
+    """Return the index just past the first shell word starting at `start`.
+
+    Skips single/double/ANSI-C quotes and $()/${}/`` expansions so that
+    whitespace *inside* those constructs does not count as a word boundary.
+    The word ends at the first top-level whitespace, or end of string.
+    """
+    n = len(text)
+    i = start
+    while i < n:
+        c = text[i]
+        if c in (" ", "\t"):
+            return i
+        if c == "\\":
+            i += 2
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "'":
+            i += 2
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            end = _find_matching_close(text, i + 1, "(", ")")
+            if end == -1:
+                return n
+            i = end + 1
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "{":
+            end = _find_matching_close(text, i + 1, "{", "}")
+            if end == -1:
+                return n
+            i = end + 1
+            continue
+        if c == "'":
+            i += 1
+            while i < n and text[i] != "'":
+                i += 1
+            i += 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "`":
+            i += 1
+            while i < n and text[i] != "`":
+                i += 1
+            i += 1
+            continue
+        i += 1
+    return n
 
 
 def extract_expansions(text):
@@ -336,6 +418,15 @@ def is_variable_assignment(subcmd, rules):
     # Extract value and check for safe expansions
     eq_pos = cmd.index("=")
     value = cmd[eq_pos + 1:]
+
+    # Reject env-prefixed commands: `VAR=val cmd args` runs `cmd` with VAR set in
+    # its environment. The assignment value must be a single shell word with no
+    # trailing command token (quotes/expansions are skipped, so a value like
+    # `$(git merge-base a b)` is still a single word).
+    tok_end = _first_token_end(cmd, eq_pos + 1)
+    if cmd[tok_end:].strip():
+        _debug(f'var assignment: "{cmd}" has a trailing command after the value')
+        return False
 
     if not check_expansion(value, rules):
         _debug(f'var assignment: "{cmd}" value has unsafe expansion')
@@ -478,13 +569,24 @@ def check_command(cmd, cwd, home=None):
     # Heredoc bail-out (with safe-path for git commit heredocs)
     if "<<" in cmd:
         # Git commit with heredoc body is safe — both git add and git commit are in allow list
-        if re.search(r'git\s+commit\s+.*<<', cmd) and all(
-            re.match(r'\s*(cd\s|git\s+add\s|git\s+commit\s)', part.strip())
-            for part in re.split(r'&&|;', cmd.split('<<')[0])
+        pre_heredoc_parts = [
+            part.strip()
+            for part in re.split(r'\|\||&&|;', cmd.split('<<')[0])
             if part.strip()
+        ]
+        if re.search(r'git\s+commit\s+.*<<', cmd) and all(
+            re.match(r'(cd\s|git\s+add\s|git\s+commit\s)', part)
+            for part in pre_heredoc_parts
         ):
-            _debug("auto-approve: git commit heredoc (all parts are git add/commit/cd)")
-            return "allow"
+            # The prefix match only inspects the first token of each part; still
+            # check the arguments for unvetted command substitutions ($(...), etc.)
+            # so the safe-path matches the rest of the hook's expansion guarantee.
+            heredoc_rules = parse_allow_rules(cwd, home)
+            if all(check_expansion(part, heredoc_rules) for part in pre_heredoc_parts):
+                _debug("auto-approve: git commit heredoc (all parts are git add/commit/cd)")
+                return "allow"
+            _debug("passthrough: git commit heredoc has unsafe expansion in a part")
+            return None
         _debug("passthrough: heredoc detected")
         return None
 

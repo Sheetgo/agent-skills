@@ -47,7 +47,7 @@ This skill validates that an implementation matches its plan. It dispatches para
 
 ### Step 2: Dispatch Parallel Reviewers
 
-Launch 5 review agents in parallel using the Task tool. Each agent gets:
+Launch 5 review agents in parallel using the Agent tool. Each agent gets:
 - The plan file content (or relevant section)
 - The list of changed files on the branch
 - Their specific review dimension

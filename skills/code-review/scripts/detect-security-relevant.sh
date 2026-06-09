@@ -22,8 +22,15 @@ if [ ! -f "$PATTERNS_FILE" ]; then
   exit 0
 fi
 
-# Get changed files
-CHANGED=$(git diff --name-only "$DIFF_BASE..$DIFF_HEAD")
+# Escape a value for safe embedding inside a JSON string (backslash + double-quote).
+json_escape() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '%s' "$s"
+}
+
+# Get changed files (three-dot: only what this branch changed since the merge-base).
+CHANGED=$(git diff --name-only "$DIFF_BASE...$DIFF_HEAD")
 
 # Build matches as JSON array
 echo -n '{"hasSecurityRelevance": '
@@ -39,7 +46,7 @@ while IFS= read -r pattern; do
     if [[ "$LOWER_FILE" == *"$LOWER_PATTERN"* ]]; then
       HAS_MATCH="true"
       [ -n "$MATCHES" ] && MATCHES="$MATCHES,"
-      MATCHES="$MATCHES{\"file\":\"$file\",\"pattern\":\"$pattern\"}"
+      MATCHES="$MATCHES{\"file\":\"$(json_escape "$file")\",\"pattern\":\"$(json_escape "$pattern")\"}"
     fi
   done <<< "$CHANGED"
 done < "$PATTERNS_FILE"

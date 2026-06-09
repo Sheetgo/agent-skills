@@ -10,7 +10,7 @@ Captures rationalizations verbatim. Output drives the SKILL.md body.
    any active feature branch).
 3. Paste the scenario prompt verbatim. Do NOT load the code-review skill.
 4. Capture the agent's response verbatim into `results/scenario-NN-baseline.md`.
-5. Tag the rationalization patterns observed (see `rationalization-patterns.md` — synthesized in Task 0.4 after all 5 baselines are captured).
+5. Tag the rationalization patterns observed (see `rationalization-patterns.md`).
 
 ## Scenarios
 

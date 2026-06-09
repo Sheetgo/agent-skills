@@ -7,13 +7,14 @@ Autonomous bug fixing pipeline for Claude Code. Give it a list of bugs, it inves
 - **Claude Code** 2.1+
 - **Node.js** 18+ (gate-check and merge scripts are `.cjs`)
 - **Python 3.6+** (setup/uninstall scripts use Python for JSON manipulation)
+- **jq** (required by `gate-check-hook.sh` to read tool input — `brew install jq` / `apt install jq`)
 - **smart-compose hook** (recommended) — auto-approves `git add && git commit` heredocs. See `hooks/smart-compose.py` in this repo.
 
 ## File Structure
 
 ```
 skills/fix-issues/
-├── SKILL.md                          # Main skill (v3.1.13, ~600 lines)
+├── SKILL.md                          # Main skill (v3.1.14, ~1100 lines)
 ├── SETUP.md                          # This file
 ├── setup.sh                          # Installer (global + per-project)
 ├── uninstall.sh                      # Uninstaller (reverses setup.sh)
@@ -22,15 +23,17 @@ skills/fix-issues/
 │   ├── session-template-guide.md     #   Checkpoint/recovery protocol
 │   ├── toolbox.md                    #   Generic tools (vitest, Playwright)
 │   ├── toolbox-sheetgo.md            #   Project-specific example (clasp, GCP)
+│   ├── toolbox-strategies.md         #   Validation-strategy catalog
 │   └── validation-templates.md       #   Pre-fix subagent prompts
 └── project-setup/                    # Runtime artifacts (used in-place, not copied)
     ├── hooks/gate-check-hook.sh      #   PostToolUse auto-validation
-    ├── scripts/check-fix-gate.cjs    #   Gate validation script (852 lines)
+    ├── scripts/check-fix-gate.cjs    #   Gate validation script (~1060 lines)
     ├── scripts/merge-fix-session.cjs #   Session merge at wrap-up
     ├── settings-permissions.json     #   Permissions template
     └── templates/
         ├── SESSION.md                #   Session registry template
-        └── FIX_ISSUE.md              #   Per-issue tracking template
+        ├── FIX_ISSUE.md              #   Per-issue tracking template
+        └── PROJECT_PROFILE.md        #   Project profile template (Phase 0.4)
 ```
 
 ## Install

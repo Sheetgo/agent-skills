@@ -22,13 +22,13 @@ Is it a bug, issue, or small improvement?
 │   ├─ Single issue → Process it through the full pipeline
 │   └─ Multiple issues → Process each through the pipeline sequentially
 ├─ Is it a new feature? → Use /brainstorming + /writing-plans
-├─ Is it a test suite problem? → Use /test-audit
+├─ Is it a broad test-suite failure (infra, many tests)? → Investigate with superpowers:systematic-debugging first, then fix here
 └─ Unsure → Default to THIS skill (cheaper to escalate than over-plan)
 ```
 
 ## Definitions
 
-**Subagent**: A Task tool invocation (subagent_type=Explore or general-purpose) with a named role, defined task, and structured output.
+**Subagent**: An Agent tool invocation (subagent_type=Explore or general-purpose) with a named role, defined task, and structured output.
 
 **Session directory**: The timestamped directory at `docs/fix-sessions/YYYY-MM-DD_HH-MM/` containing SESSION.md (registry, summary) and per-issue FIX-XXX.md files. Survives compaction. At wrap-up, FIX files are merged into SESSION.md for archival (single file per session).
 
@@ -333,9 +333,7 @@ The project profile (`<project-root>/.claude/PROJECT_PROFILE.md`) maps the unive
 1. Read <project-root>/.claude/PROJECT_PROFILE.md.
 
 2. If missing:
-   → Run profile auto-discovery:
-     node ~/.claude/skills/fix-issues/project-setup/scripts/discover-profile.cjs <project-root>
-   → If the script doesn't exist or fails, dispatch a profiler subagent:
+   → Run profile auto-discovery by dispatching a profiler subagent that:
      - Reads CLAUDE.md, package.json/pyproject.toml/Cargo.toml/go.mod
      - Greps for known async primitives, error patterns, mock files
      - Identifies user journeys, cross-layer pairs, validation tools
@@ -614,7 +612,7 @@ fix_type: PROVISIONAL
 
 **Step A — Dispatch implementer subagent:**
 
-Invoke: Task tool, subagent_type=general-purpose
+Invoke: Agent tool, subagent_type=general-purpose
 Description: "Fix FIX-XXX: [brief description]"
 Prompt: Include ALL of: fix strategy from Section 3 + root cause from Section 2.6 +
   affected files from Section 2.1 + implementer constraints from 3.2 +
@@ -634,7 +632,7 @@ CHECKPOINT: After implementer reports → update Section 3 with files changed + 
 
 **Step B — Dispatch spec compliance reviewer (SEPARATE subagent, NOT self-assessed):**
 
-Invoke: Task tool, subagent_type=general-purpose
+Invoke: Agent tool, subagent_type=general-purpose
 Description: "Review spec compliance for FIX-XXX"
 Prompt: Include fix strategy + implementer's report + "Check: regression test added? Root cause fixed (not symptom)? Business rules followed?"
 
@@ -719,13 +717,13 @@ The validator dispatched here is bounded by the FIX'S blast radius (which proper
    assertion query). "Tool A's output makes tool B's output predictable" is NOT a
    dependency — tool B must still run.
 
-6. Compose overall verdict from per-property verdicts:
+7. Compose overall verdict from per-property verdicts:
    - All PASS → VERIFIED with evidence type per profile §H
      (tag as MOCK-VERIFIED if no live-required property fired; otherwise LIVE-VERIFIED)
    - Any FAIL → auto-loop to Phase 3 with the failure as new diagnostic input (max 3 loops)
    - Any LIMITED-VERIFIED → overall LIMITED-VERIFIED with property gaps listed
    - Investigation indicated a profile §I capability-boundary category → OUT_OF_BAND_VERIFICATION_REQUIRED
-     (skill never silently downgrades to VERIFIED for these — see Capability Boundary, Chunk 3)
+     (skill never silently downgrades to VERIFIED for these — see the Capability Boundary section)
 
 OUTPUT RULE (applies to all subagent + test invocations):
   □ NEVER pipe test commands through tail/head/grep — truncated output hides failures.
@@ -734,12 +732,15 @@ OUTPUT RULE (applies to all subagent + test invocations):
              Grep: pattern="FAIL|Error|✗" path="/tmp/claude/vitest-out.txt"
 ```
 
-CHECKPOINT: After validator subagent(s) return, append to FIX-XXX.md Section 4:
+CHECKPOINT: After validator subagent(s) return, append to FIX-XXX.md Section 4 a
+per-property verdict TABLE (Gate 3 parses this table, not a bullet list — it must
+have `Property` and `Verdict` column headers and one row per `yes` property):
 ```
-Per-property verdicts:
-  - P{X}: PASS | FAIL | LIMITED-VERIFIED — <evidence summary or contradiction>
-  - ...
-Composed verdict: MOCK-VERIFIED | LIVE-VERIFIED | LIMITED-VERIFIED | OUT_OF_BAND_VERIFICATION_REQUIRED
+| Property | Verdict | Tools | Evidence |
+|----------|---------|-------|----------|
+| P{X} | PASS / FAIL / LIMITED-VERIFIED | <tools> | <evidence summary or contradiction> |
+
+**Composed verdict**: MOCK-VERIFIED | LIVE-VERIFIED | LIMITED-VERIFIED | OUT_OF_BAND_VERIFICATION_REQUIRED
 Tools used: <list>
 Cross-check disagreements: <list or "none">
 ```
@@ -1107,6 +1108,6 @@ BEGIN EXECUTION
 4. **PRESERVE INTENT** — never change what a feature does, only fix HOW
 5. **MINIMAL CHANGES** — fix the bug, nothing more. NEVER PUSH.
 6. **RE-READ AFTER COMPACTION** — SESSION.md + current FIX-XXX.md are your memory, trust only the files
-7. **DISPATCH SUBAGENTS** — Phase 3 Steps A+B+C use Task tool. Do NOT edit files yourself.
+7. **DISPATCH SUBAGENTS** — Phase 3 Steps A+B+C use the Agent tool. Do NOT edit files yourself.
 8. **READ TEST OUTPUT** — use Read tool, never `tail`/`head`/`grep` on test commands. Truncated output hides failures.
-9. **PASS THE GATES** — all 3 gates mandatory. GATE 1/2: hook auto-validates on Edit. GATE 3: run check-fix-gate.cjs via Bash for EACH issue (mandatory). FAIL = fix before proceeding.
+9. **PASS THE GATES** — all 3 gates mandatory. For EACH gate, run check-fix-gate.cjs via Bash (the Edit hook also fires, but hook output alone is NOT sufficient — run the script per the gate procedure). FAIL = fix before proceeding.

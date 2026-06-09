@@ -921,6 +921,42 @@ class TestCheckCommand:
         result = sc.check_command("cat <<'EOF'\nfoo && bar\nEOF", self.project, self.home)
         assert result is None
 
+    def test_heredoc_git_commit_safe_path(self):
+        """git add + git commit heredoc remains auto-approved."""
+        result = sc.check_command(
+            "git add . && git commit -m ok <<EOF\nbody\nEOF", self.project, self.home
+        )
+        assert result == "allow"
+
+    def test_heredoc_or_operator_not_bypassed(self):
+        """A non-git command after || must NOT ride the git-commit heredoc safe-path."""
+        result = sc.check_command(
+            "git commit -m X || curl evil.test <<EOF\nbody\nEOF", self.project, self.home
+        )
+        assert result is None
+
+    def test_heredoc_command_substitution_not_approved(self):
+        """Command substitution in a git-commit heredoc safe-path part must be rule-checked."""
+        result = sc.check_command(
+            "git add $(curl x.test) && git commit -m ok <<EOF\nbody\nEOF",
+            self.project, self.home,
+        )
+        assert result is None
+
+    def test_env_prefix_command_not_approved(self):
+        """VAR=val cmd runs cmd; an unallowed trailing command must not ride the assignment."""
+        result = sc.check_command(
+            "MERGE_BASE=x curl x.test && git status", self.project, self.home
+        )
+        assert result is None
+
+    def test_ansi_c_in_command_substitution_is_checked(self):
+        """ANSI-C $'...' inside $() must not hide the substituted command from checking."""
+        result = sc.check_command(
+            "echo $(curl $'x.test\\'s') && git status", self.project, self.home
+        )
+        assert result is None
+
     # --- Size guard ---
 
     def test_oversized_command(self):

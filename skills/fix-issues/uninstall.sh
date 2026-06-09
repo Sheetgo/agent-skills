@@ -13,7 +13,12 @@ PROJECT_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --project) PROJECT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
+        --project)
+            if [ $# -lt 2 ]; then
+                echo "Error: --project requires a path argument" >&2
+                exit 1
+            fi
+            PROJECT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
         *) PROJECT_DIR="$(cd "$1" && pwd)"; shift ;;
     esac
 done
@@ -59,18 +64,27 @@ if [ ! -f "$SETTINGS" ]; then
     exit 0
 fi
 
-# Remove fix-issues permissions
-python3 -c "
-import json, sys
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "  ⚠ python3 not found — edit .claude/settings.local.json manually"
+    exit 0
+fi
 
-with open('$SETTINGS') as f: d = json.load(f)
+# Remove only fix-issues-specific entries. NOTE: generic permissions like
+# Read(~/.claude/skills/**) are intentionally left in place — other installed
+# skills may depend on them, so removing them here would break those skills.
+# The path is passed via the environment so a quoted project path is safe.
+SETTINGS="$SETTINGS" python3 -c "
+import json, os
 
-# Remove fix-issues specific permissions
+p = os.environ['SETTINGS']
+with open(p) as f: d = json.load(f)
+
+# Remove fix-issues-specific permissions only (not shared skills/** rules)
 perms = d.get('permissions', {}).get('allow', [])
-fix_perms = [p for p in perms if 'fix-issues' in p or 'skills/**' in p]
+fix_perms = [x for x in perms if 'fix-issues' in x]
 if fix_perms:
-    d['permissions']['allow'] = [p for p in perms if p not in fix_perms]
-    print(f'  ✓ Removed {len(fix_perms)} fix-issues permission rules')
+    d['permissions']['allow'] = [x for x in perms if x not in fix_perms]
+    print(f'  ✓ Removed {len(fix_perms)} fix-issues permission rule(s)')
 else:
     print('  - No fix-issues permissions found')
 
@@ -99,10 +113,9 @@ if not d.get('permissions'):
 
 # Write back or delete if empty
 if d:
-    with open('$SETTINGS', 'w') as f: json.dump(d, f, indent=2)
+    with open(p, 'w') as f: json.dump(d, f, indent=2)
 else:
-    import os
-    os.remove('$SETTINGS')
+    os.remove(p)
     print('  ✓ Deleted empty settings.local.json')
 " 2>/dev/null || echo "  ⚠ Could not clean settings — edit .claude/settings.local.json manually"
 

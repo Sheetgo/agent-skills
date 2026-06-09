@@ -294,7 +294,7 @@ fi
 
 ```bash
 BRANCH=$(git branch --show-current)
-SANITIZED_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+SANITIZED_BRANCH=$(echo "$BRANCH" | sed 's#/#%2F#g')   # percent-encode "/" (feat/x ≠ feat-x)
 
 if echo "$BRANCH" | grep -qE "^(main|master)$"; then
   echo "Error: Cannot squash on main/master branch."

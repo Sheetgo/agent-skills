@@ -95,7 +95,7 @@ done
 
 # Output results as additionalContext if we have any
 if [[ -n "$RESULTS" ]]; then
-  ESCAPED=$(printf '%b' "$RESULTS" | jq -Rs .)
+  ESCAPED=$(printf '%b' "$RESULTS" | jq -Rs . 2>/dev/null) || { echo "$(date +%T) FAIL:jq_escape" >> "$DIAG_LOG"; exit 0; }
   echo "$(date +%T) OUTPUT gates=$GATES fix=$FIX_ID" >> "$DIAG_LOG"
   printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":${ESCAPED}}}"
 else

@@ -1,6 +1,6 @@
 # `code-review` skill — design
 
-> **Status**: Draft, pending user approval
+> **Status**: Implemented (shipped on this branch)
 > **Author**: Willian Vargas (with Claude Opus 4.7)
 > **Date**: 2026-05-07
 

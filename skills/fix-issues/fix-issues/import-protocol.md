@@ -28,7 +28,7 @@ SELECTIVE IMPORT:
 
 **Import Protocol:**
 
-The fix-session uses the SAME template (`FIX_SESSION.md`) and SAME directory
+The fix-session uses the SAME template (`SESSION.md`) and SAME directory
 (`docs/fix-sessions/`) as any other fix session. The only difference is WHERE
 the issues come from.
 
@@ -83,7 +83,7 @@ STEP 2 - SCAN FOR IMPORTABLE ISSUES:
   After scope is set, proceed autonomously. No further questions.
 
 STEP 3 - REGISTER IN FIX-SESSION:
-  Write issues into the session document using the FIX_SESSION.md template:
+  Write issues into the session document using the SESSION.md template:
     - Section 1 (Issue Registry): One row per imported issue
     - Sections 2, 3, and 4: Clone the FIX-001 block for each additional issue
 

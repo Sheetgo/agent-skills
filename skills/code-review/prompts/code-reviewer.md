@@ -1,7 +1,7 @@
 # Layer 1 (b) — code-reviewer subagent prompt
 
 This prompt is dispatched alongside Codex CLI as a parallel reviewer. The diff
-scope must match (PR base if open, else origin/master).
+scope must match (PR base if open, else the remote's default branch — origin/main or origin/master).
 
 ## Variables (filled at dispatch time)
 
@@ -17,7 +17,7 @@ You are reviewing the diff between {{DIFF_BASE}} and {{DIFF_HEAD}} on branch
 
 Run:
 ```
-git diff {{DIFF_BASE}}..{{DIFF_HEAD}}
+git diff {{DIFF_BASE}}...{{DIFF_HEAD}}
 ```
 
 Then look at touched files in their full context (not just the diff).

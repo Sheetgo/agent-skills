@@ -31,7 +31,7 @@ COMMAND=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; d=json.load(sys.st
 # Only intercept actual `git push` invocations.
 # Match: start-of-line OR after `&&` / `;` / `|`, then optional env-var prefix, then `git push`.
 # Don't match: heredocs, comments, echo'd strings.
-if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|;|\|)\s*(GIT_[A-Z_]+="[^"]*"\s+)*git\s+push(\s|$)'; then
+if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|;|\|)\s*(GIT_[A-Z_]+=("[^"]*"|[^ ]+)\s+)*git\s+push(\s|$)'; then
   exit 0
 fi
 

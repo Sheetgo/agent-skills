@@ -1,3 +1,27 @@
+# Worklog v2 (Session-Aware, Task-Centric) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Rewrite `skills/worklog/SKILL.md` to draw from both git history and Claude Code session logs, group work by Jira ticket under each day, optionally span repos, and emit deliverable-led terse bullets.
+
+**Architecture:** A single zero-dependency `SKILL.md` (no committed script, no `project-setup/`). It ships an inline `python3` digest recipe the agent runs to extract human prompts from session transcripts, maps work to tickets (branch → text → cluster), and renders day → ticket bullets in a "Tight + brief why" voice. Validation is dogfood (the recipe is runnable; the prose is reviewed against the spec).
+
+**Tech Stack:** Markdown (skill spec), `git log`, `python3` (stdlib only) for transcript scanning.
+
+**Spec:** `docs/plans/2026-06-09-worklog-session-scan-design.md`
+
+---
+
+### Task 1: Rewrite `skills/worklog/SKILL.md` to v2
+
+**Files:**
+- Modify (full rewrite): `skills/worklog/SKILL.md`
+
+- [ ] **Step 1: Overwrite the file with the complete v2 content below**
+
+Write `skills/worklog/SKILL.md` with EXACTLY this content (the inner ```python fence is part of the file):
+
+`````markdown
 ---
 name: worklog
 description: "Use when generating worklog summaries, time reports, or Jira work log entries from git history and Claude Code session logs"
@@ -155,3 +179,86 @@ Register: plain, factual, past tense, no "I"/"we" — changelog/demo-caption voi
 - No bold/backticks/inline code in bullets; no sub-bullets.
 - No hedging ("helped", "contributed to") or business-speak ("leveraged", "drove alignment", "delivered value", "robust", "seamless").
 - No "how this was produced" notes; no weekday names in headers.
+`````
+
+- [ ] **Step 2: Verify structure is intact**
+
+Run: `grep -nE '^(name:|description:|## )' skills/worklog/SKILL.md`
+Expected: `name:` + `description:` frontmatter, and these `## ` headers in order — Overview, Day Boundary, Sources, Process, Session Log Scanning, Ticket Mapping, Cross-Repo, Output Format, Voice & Tone, What NOT to Include.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add skills/worklog/SKILL.md
+git commit -m "feat: Rewrite worklog to scan session logs and group by ticket"
+```
+
+---
+
+### Task 2: Validate the embedded recipe + dogfood dry run
+
+This is the test: the recipe must run clean and produce a usable digest, and the rendered worklog must follow the day→ticket structure and voice.
+
+**Files:**
+- Test (scratch): `/tmp/wl-recipe.py` (copy of the recipe block from the SKILL.md)
+
+- [ ] **Step 1: Extract the recipe to a scratch file**
+
+Copy the `python3` block from `skills/worklog/SKILL.md`'s "Session Log Scanning" section into `/tmp/wl-recipe.py`.
+
+- [ ] **Step 2: Run it on this repo (today) — expect a non-empty JSON digest, exit 0**
+
+Run: `python3 /tmp/wl-recipe.py ~/.claude/projects/-Users-willvargas-Development-Sheetgo-agent-skills 2026-06-09T06:00:00 2026-06-10T06:00:00`
+Expected: one JSON object per line, each with `date`, `branch`, `prompt`; injected/duplicate prompts absent; exit 0.
+
+- [ ] **Step 3: Run it on `sheetgo-automations` (yesterday) — expect SG-13200-era prompts**
+
+Run: `python3 /tmp/wl-recipe.py ~/.claude/projects/-Users-willvargas-Development-Sheetgo-sheetgo-automations 2026-06-08T06:00:00 2026-06-09T06:00:00`
+Expected: digest lines on branch `release/penguin-mafia-update`; no `Review this change for security vulnerabilities` or `Base directory for this skill:` lines (filtered).
+
+- [ ] **Step 4: Manually render and eyeball**
+
+Following the SKILL.md Process, render the `sheetgo-automations` digest + `git -C ../sheetgo-automations log` for the same window into the Output Format. Confirm: day header `## Jun 08`; ticket sub-headers (`### SG-13200 …` via commit-text fallback, plus a `### <Topic>` cluster for the no-ID automations work); bullets follow the Voice & Tone rules (≤~10-word clause, deliverable-led, no tool/file names). No commit required (validation only).
+
+---
+
+### Task 3: Refresh the README worklog descriptions
+
+**Files:**
+- Modify: `README.md` (Skills table row and Commands table row for worklog)
+
+- [ ] **Step 1: Update the Skills-table row**
+
+Replace:
+`| \`worklog\` | Generate worklog summaries / time reports from git history for Jira reporting. |`
+With:
+`| \`worklog\` | Generate deliverable-focused worklogs for Jira from git history + Claude Code session logs, grouped by ticket. |`
+
+- [ ] **Step 2: Update the Commands-table row**
+
+Replace:
+`| \`/worklog\` | Generate a worklog summary from git history for Jira reporting. |`
+With:
+`| \`/worklog\` | Generate a ticket-grouped worklog from git history + session logs for Jira reporting. |`
+
+- [ ] **Step 3: Verify both rows changed**
+
+Run: `grep -n "worklog" README.md`
+Expected: both rows now mention session logs / ticket grouping.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: Update worklog README entries for v2 session scanning"
+```
+
+---
+
+## Self-Review
+
+**Spec coverage:** Sources (Task 1 §Sources/Process) ✓ · session extraction + refinements (§Session Log Scanning + recipe filters injected/dup) ✓ · ticket mapping branch→text→cluster (§Ticket Mapping) ✓ · cross-repo default+prompt+fold (§Cross-Repo) ✓ · output day→ticket + by-task override (§Output Format) ✓ · voice "Tight + brief why" (§Voice & Tone) ✓ · privacy/no-transcript (§What NOT to Include) ✓ · dogfood validation (Task 2) ✓ · README (Task 3) ✓. No gaps.
+
+**Placeholder scan:** Recipe is complete and runnable; all section content is literal; no TBD/TODO. The `<short title>` / `<Topic>` / `<this repo>` tokens are intentional output templates, not plan gaps.
+
+**Type/name consistency:** session dir path form (`~/.claude/projects/<sanitized-cwd>`), ticket regex (`SG-\d+`), recipe arg order (`<session-dir> <lo-iso> <hi-iso>`), and header levels (`##` day / `###` ticket) are consistent across all sections and tasks.

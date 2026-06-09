@@ -42,11 +42,28 @@
 |--------|------|--------|-----------|
 | | | | |
 
-#### 2.5 Test Coverage
+#### 2.5 Universal Properties
 
-| Test File | Type | Covers This Area | Status |
-|-----------|------|------------------|--------|
-| | | | |
+Answer P1–P13 yes/no (see SKILL.md "Universal Properties (P1–P13)"). A one-sentence
+justification is required for each `yes`. The set of `yes` properties determines the
+verdict required at Gate 3 — this table is mandatory and Gate 3 fails if it is empty.
+
+| Property | Yes/No | Justification (required if yes) |
+|----------|--------|---------------------------------|
+| P1 — Boundary crossing | | |
+| P2a — Code-level async | | |
+| P2b — Platform-deferred mutation | | |
+| P3 — Externally-visible state mutation | | |
+| P4 — Authorization-dependent | | |
+| P5 — Error classification/routing | | |
+| P6 — Cross-layer signaling | | |
+| P7 — Single-observation diagnosis | | |
+| P8 — Journey continuity | | |
+| P9 — Component ripple | | |
+| P10 — Business-rule semantics | | |
+| P11 — Visual/render dependency | | |
+| P12 — Mock-surface asymmetry | | |
+| P13 — Configuration-only change | | |
 
 #### 2.6 Hypothesis
 
@@ -110,5 +127,16 @@
 | Regression check | | | |
 | Cross-issue regression | | | |
 | Integration (if applicable) | | | |
+
+#### Per-Property Verdicts
+
+One row per `yes` property from §2.5 (see Phase 4.1). Gate 3 requires a verdict here
+for every `yes` property, plus the composed verdict below.
+
+| Property | Verdict | Tools | Evidence |
+|----------|---------|-------|----------|
+| | | | |
+
+**Composed verdict**: <MOCK-VERIFIED | LIVE-VERIFIED | LIMITED-VERIFIED | OUT_OF_BAND_VERIFICATION_REQUIRED>
 
 **Final Status**: VERIFIED | PARTIALLY_VERIFIED | NEEDS_REWORK

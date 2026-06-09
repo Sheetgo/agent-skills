@@ -1,2 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# conftest.py already imports the hook via a __file__-relative path, so this is
+# belt-and-suspenders: it pins the repo root on sys.path regardless of where
+# pytest is invoked from.
+pythonpath = ["."]

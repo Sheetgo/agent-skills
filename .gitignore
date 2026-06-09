@@ -16,5 +16,8 @@ creds.json
 # Claude session state (not skills)
 **/.claude/sessions/
 
+# Local Claude settings (per-checkout hook/permission registrations)
+**/.claude/settings.local.json
+
 # Local analysis (not for remote)
 .local/

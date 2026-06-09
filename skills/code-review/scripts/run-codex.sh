@@ -39,14 +39,28 @@ if PR_BASE=$(gh pr view "$CURRENT_BRANCH" --json baseRefName --jq .baseRefName 2
   BASE_REF="origin/$PR_BASE"
   echo "[run-codex] PR open, using base: $BASE_REF" >&2
 else
-  BASE_REF="origin/master"
+  # No PR: use the remote's default branch (origin/HEAD), falling back to
+  # main then master — don't assume the default branch is "master".
+  DEFAULT_BRANCH=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      DEFAULT_BRANCH="main"
+    else
+      DEFAULT_BRANCH="master"
+    fi
+  fi
+  BASE_REF="origin/$DEFAULT_BRANCH"
   echo "[run-codex] No PR open, using base: $BASE_REF" >&2
 fi
 
-# Verify base ref exists locally; fetch if needed
+# Verify base ref exists locally; fetch if needed. A failed fetch must not let
+# set -e propagate a raw exit 128 — surface it as exit 2 (missing prerequisite).
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-  echo "[run-codex] Fetching $BASE_REF" >&2
-  git fetch origin "${BASE_REF#origin/}"
+  echo "[run-codex] Fetching ${BASE_REF#origin/}" >&2
+  if ! git fetch origin "${BASE_REF#origin/}" >/dev/null 2>&1; then
+    echo "ERROR: base ref $BASE_REF not found and could not be fetched" >&2
+    exit 2
+  fi
 fi
 
 # Run Codex review

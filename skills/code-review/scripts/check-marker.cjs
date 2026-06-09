@@ -29,7 +29,10 @@ function fail(code, message) {
 
 let gitDir;
 try {
-  gitDir = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--git-dir'], {
+  // --git-common-dir (not --git-dir) so markers are shared across linked
+  // worktrees: --git-dir returns .git/worktrees/<name> in a linked worktree,
+  // which would hide a marker written from the main worktree (or vice versa).
+  gitDir = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
@@ -64,6 +67,16 @@ if (!fs.existsSync(markerPath)) {
   const tail = staleCount > 0 ? ` (${staleCount} stale marker(s) found)` : '';
   fail(1, `[code-review:check-marker] no marker for HEAD ${headSha.slice(0, 8)}${tail}`);
 }
+
+// Marker for current HEAD is present — clean up any stale markers from earlier
+// approvals so they don't accumulate in the git dir.
+try {
+  for (const f of fs.readdirSync(gitDirAbs)) {
+    if (f.startsWith('code-review-passed-') && f !== `code-review-passed-${headSha}`) {
+      try { fs.unlinkSync(path.join(gitDirAbs, f)); } catch (_e) { /* best-effort */ }
+    }
+  }
+} catch (_e) { /* best-effort */ }
 
 process.stdout.write(`[code-review:check-marker] ok — marker present for ${headSha.slice(0, 8)}\n`);
 process.exit(0);

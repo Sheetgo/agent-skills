@@ -27,21 +27,36 @@ skill_name = tool_input.get("skill", "")
 if "finishing-a-development-branch" not in skill_name:
     sys.exit(0)
 
-# Check for session-persist marker
-try:
-    branch = subprocess.check_output(
-        ["git", "branch", "--show-current"],
-        text=True, stderr=subprocess.DEVNULL
+# Check for session-persist marker. Run git in the hook's cwd (not the process
+# CWD, which may be a subdirectory) and resolve the marker against the repo root
+# so the lookup matches where session-persist writes it.
+cwd = input_data.get("cwd") or os.getcwd()
+
+
+def _git(*git_args):
+    return subprocess.check_output(
+        ["git", "-C", cwd, *git_args],
+        text=True, stderr=subprocess.DEVNULL, timeout=5,
     ).strip()
-except (subprocess.CalledProcessError, FileNotFoundError):
-    # Can't determine branch, allow through
+
+
+try:
+    branch = _git("branch", "--show-current")
+    repo_root = _git("rev-parse", "--show-toplevel")
+except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    # Can't determine branch/root, allow through
     sys.exit(0)
 
 if not branch:
     sys.exit(0)
 
-sanitized_branch = branch.replace("/", "-")
-marker_path = f".claude/sessions/{sanitized_branch}/session-persist-done"
+# Percent-encode "/" (not replace with "-") so feat/x and feat-x don't collide
+# on the same session directory. Must match the encoding in the session-notes,
+# squash-commits, and undo-squash skills (see CLAUDE.md "Session State").
+sanitized_branch = branch.replace("/", "%2F")
+marker_path = os.path.join(
+    repo_root, ".claude", "sessions", sanitized_branch, "session-persist-done"
+)
 
 if os.path.exists(marker_path):
     # Documentation already updated, allow finishing

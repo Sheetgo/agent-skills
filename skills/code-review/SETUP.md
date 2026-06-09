@@ -15,7 +15,7 @@ Adjust the source path if your `agent-skills` checkout lives elsewhere. After th
 
 - The `code-review` skill (invoked automatically when the YAML description triggers fire, or manually with `/code-review`)
 - All four subagent prompts at `~/.claude/skills/code-review/prompts/`
-- Three helper scripts at `~/.claude/skills/code-review/scripts/`
+- Four helper scripts at `~/.claude/skills/code-review/scripts/` (`run-codex.sh`, `parse-claims.cjs`, `detect-security-relevant.sh`, `check-marker.cjs`)
 - The worked example at `~/.claude/skills/code-review/examples/full-flow.md`
 
 ### Prerequisites for full functionality
@@ -26,7 +26,7 @@ Adjust the source path if your `agent-skills` checkout lives elsewhere. After th
 | `gh` CLI (GitHub CLI) authenticated to the relevant org | Layer 1 base detection (PR base lookup) and DEFER + DOCUMENT thread queries | `brew install gh && gh auth login` |
 | Node.js (any version with `fs` + `child_process`) | `parse-claims.cjs` and `check-marker.cjs` | Already required by most projects |
 
-If the Codex CLI is unavailable, the skill falls back to reviewer-only Layer 1 (single-signal). If `gh` is unavailable or unauthenticated, the diff base falls back to `origin/master` and PR-context drafts are skipped.
+If the Codex CLI is unavailable, the skill falls back to reviewer-only Layer 1 (single-signal). If `gh` is unavailable or unauthenticated, the diff base falls back to the remote's default branch (`origin/main`/`origin/master`) and PR-context drafts are skipped.
 
 ### Verify user-level install
 

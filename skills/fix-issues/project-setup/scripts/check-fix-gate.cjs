@@ -63,15 +63,15 @@ function parseIssueFile(filePath) {
       diagnosticResults: extractSubsectionTableRows(s2Block, '2.7'),
       preFixValidation: extractSubsectionTableRows(s2Block, '2.8'),
       universalProperties: extractUniversalPropertiesTable(s2Block),
-      hasGatePassage: /GATE 1 PASSED/i.test(s2Block),
-      isBatched: /GATE 1 PASSED.*\[batch\]/i.test(s2Block),
+      hasGatePassage: /^[ \t>*#-]*GATE 1 PASSED/im.test(s2Block),
+      isBatched: /^[ \t>*#-]*GATE 1 PASSED.*\[batch\]/im.test(s2Block),
       raw: s2Block,
     },
     section3: {
       commitHash: (s3Block.match(/`([0-9a-f]{7,40})`/) || [])[1] || null,
       testsAdded: extractTestsAdded(s3Block),
-      hasGatePassage: /GATE 2 PASSED/i.test(s3Block),
-      hasImplementerEvidence: /Task tool|subagent|dispatched/i.test(s3Block),
+      hasGatePassage: /^[ \t>*#-]*GATE 2 PASSED/im.test(s3Block),
+      hasImplementerEvidence: /Task tool|Agent tool|subagent|dispatched/i.test(s3Block),
       hasSpecReview: /[Ss]pec [Cc]omplian|review/i.test(s3Block),
       hasCodeReview: /[Cc]ode [Qq]uality|requesting-code-review/i.test(s3Block) || /LIGHT skip/i.test(s3Block),
       codeReviewSkipped: /LIGHT skip/i.test(s3Block),
@@ -84,7 +84,7 @@ function parseIssueFile(filePath) {
       perPropertyVerdicts: extractPerPropertyVerdicts(s4Block),
       composedVerdict: extractComposedVerdict(s4Block),
       finalStatus: (s4Block.match(/\*\*Final Status\*\*:\s*(.+)/) || [])[1]?.trim() || '',
-      hasGatePassage: /GATE 3 PASSED/i.test(s4Block),
+      hasGatePassage: /^[ \t>*#-]*GATE 3 PASSED/im.test(s4Block),
       screenshotPaths: [...s4Block.matchAll(/([^\s]+\.png)/g)].map(m => m[1]),
       raw: s4Block,
     },
@@ -138,10 +138,10 @@ function extractPerPropertyVerdicts(s4Block) {
   let headers = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (line.startsWith('|') && !line.match(/^\|[\s-|]+\|$/)) {
+    if (line.startsWith('|') && !line.match(/^\|[\s:|-]+\|$/)) {
       const cells = line.split('|').slice(1, -1).map(c => c.trim());
       if (!inTable) {
-        const lower = cells.map(c => c.toLowerCase());
+        const lower = cells.map(c => c.toLowerCase().replace(/\*\*/g, ''));
         if (lower.includes('property') && lower.some(c => c === 'verdict')) {
           inTable = true;
           headers = lower;
@@ -154,14 +154,11 @@ function extractPerPropertyVerdicts(s4Block) {
           tools: cells[2] || '',
           evidence: cells[3] || cells.slice(3).join(' | ') || '',
         });
-      } else if (inTable && !/^\|[\s-|]+\|?$/.test(line)) {
-        // Non-data row encountered — stop (table ended)
-        if (cells.length > 0 && cells[0] && !/^P\d/i.test(cells[0])) {
-          inTable = false;
-        }
       }
-    } else if (inTable && line === '') {
-      inTable = false;
+      // No early termination on a stray/summary row or a blank line between
+      // rows: the /^P\d/ filter above already ignores non-property rows, and
+      // Section 4 has exactly one Property|Verdict table — so dropping the rest
+      // of the table on the first non-P or blank row was losing real verdicts.
     }
   }
   return result;
@@ -174,9 +171,12 @@ function extractPerPropertyVerdicts(s4Block) {
  */
 function extractComposedVerdict(s4Block) {
   if (!s4Block) return null;
-  // Match the LAST occurrence (in case initial verdict is mentioned then upgraded)
+  // Match the LAST line that *declares* the verdict (so an "upgraded" verdict on
+  // a later line wins), but only a real declaration line — anchored to line-start
+  // (after optional blockquote/list/bold markers) so a mid-sentence mention like
+  // "do not write Composed verdict: X here" can't override the real value.
   const matches = [...s4Block.matchAll(
-    /\*?\*?[Cc]omposed [Vv]erdict\*?\*?\s*:?\s*\*?\*?([A-Z_][A-Z_ -]*(?:\s*\+\s*[A-Z_][A-Z_ -]*)?)/g
+    /^[ \t>*-]*\*?\*?[Cc]omposed [Vv]erdict\*?\*?\s*:?\s*\*?\*?([A-Z_][A-Z_ -]*(?:\s*\+\s*[A-Z_][A-Z_ -]*)?)/gm
   )];
   if (matches.length === 0) return null;
   const last = matches[matches.length - 1];
@@ -252,12 +252,28 @@ function parseIssueRegistry(content) {
 
 /**
  * Extract content between a ## heading and the next ## heading.
+ * Fence-aware: a `## ...` line inside a ``` code fence (e.g. a diff or shell
+ * output that happens to start with ##) does NOT terminate the section.
  */
 function extractSectionContent(content, heading) {
-  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(`${escapedHeading}[\\s\\S]*?(?=\\n## [^#]|$)`);
-  const match = content.match(regex);
-  return match ? match[0] : null;
+  const lines = content.split('\n');
+  const out = [];
+  let inSection = false;
+  let inFence = false;
+  for (const line of lines) {
+    const isFenceToggle = /^\s*(```|~~~)/.test(line);
+    if (!inSection) {
+      if (line.startsWith(heading)) {
+        inSection = true;
+        out.push(line);
+      }
+      continue;
+    }
+    if (!inFence && /^## [^#]/.test(line)) break; // next top-level section
+    if (isFenceToggle) inFence = !inFence;
+    out.push(line);
+  }
+  return inSection ? out.join('\n') : null;
 }
 
 /**
@@ -267,7 +283,7 @@ function extractTableRows(text) {
   const lines = text.split('\n');
   const rows = [];
   for (const line of lines) {
-    if (line.trim().startsWith('|') && !line.trim().match(/^\|[\s-|]+\|$/)) {
+    if (line.trim().startsWith('|') && !line.trim().match(/^\|[\s:|-]+\|$/)) {
       const cells = line.split('|').slice(1, -1); // trim outer pipes
       if (cells.length > 0) {
         rows.push(cells.map(c => c.trim()));
@@ -284,7 +300,10 @@ function extractTableRows(text) {
 function extractField(block, fieldName) {
   const regex = new RegExp(`\\*\\*${fieldName}\\*\\*:\\s*(.+)`, 'i');
   const match = block.match(regex);
-  return match ? match[1].trim() : null;
+  if (!match) return null;
+  // Strip surrounding markdown decoration so a value written as **STANDARD** or
+  // `STANDARD` compares equal to STANDARD (otherwise scope/status checks fail open).
+  return match[1].trim().replace(/\*\*/g, '').replace(/^`+|`+$/g, '').trim();
 }
 
 /**
@@ -292,7 +311,7 @@ function extractField(block, fieldName) {
  */
 function extractSubsectionText(block, subsectionNum) {
   const regex = new RegExp(
-    `#### ${subsectionNum.replace('.', '\\.')}[\\s\\S]*?(?=####|$)`
+    `#### ${subsectionNum.replace('.', '\\.')}(?![\\d.])[\\s\\S]*?(?=####|$)`
   );
   const match = block.match(regex);
   if (!match) return '';
@@ -310,7 +329,7 @@ function extractSubsectionText(block, subsectionNum) {
  */
 function extractSubsectionTableFiles(block, subsectionNum) {
   const regex = new RegExp(
-    `#### ${subsectionNum.replace('.', '\\.')}[\\s\\S]*?(?=####|$)`
+    `#### ${subsectionNum.replace('.', '\\.')}(?![\\d.])[\\s\\S]*?(?=####|$)`
   );
   const match = block.match(regex);
   if (!match) return [];
@@ -326,7 +345,7 @@ function extractSubsectionTableFiles(block, subsectionNum) {
  */
 function extractSubsectionTableRows(block, subsectionNum) {
   const regex = new RegExp(
-    `#### ${subsectionNum.replace('.', '\\.')}[\\s\\S]*?(?=####|$)`
+    `#### ${subsectionNum.replace('.', '\\.')}(?![\\d.])[\\s\\S]*?(?=####|$)`
   );
   const match = block.match(regex);
   if (!match) return [];
@@ -371,6 +390,17 @@ function extractTestsAdded(block) {
  * @returns {object} { result: 'PASS'|'FAIL'|'ERROR', checks: [], warnings: [], scope: string }
  */
 function checkGate(sessionDir, gate, fixId, options = {}) {
+  // Stamp gate/fixId onto every result so library callers (not just the CLI)
+  // get a fully-formed object for formatOutput.
+  const result = _checkGate(sessionDir, gate, fixId, options);
+  if (result && typeof result === 'object') {
+    result.gate = gate;
+    result.fixId = fixId;
+  }
+  return result;
+}
+
+function _checkGate(sessionDir, gate, fixId, options = {}) {
   // Validate inputs
   if (!fixId || !/^FIX-\d{3}$/.test(fixId)) {
     return { result: 'ERROR', checks: [], warnings: [], scope: null, message: `Invalid FIX-ID: ${fixId}` };

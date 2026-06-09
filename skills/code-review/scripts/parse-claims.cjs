@@ -46,7 +46,13 @@ const text = fs.readFileSync(inputFile, 'utf8');
 
 // Pattern: lines like "- [P2] <summary> — <abspath>:<line>" followed by
 // indented body lines. Body ends at next "- [PN]" or EOF.
-const CLAIM_HEADER = /^- \[(P[123])\] (.+?) — (.+?):(\d+)/;
+//
+// Separator tolerates em-dash (—), en-dash (–), or hyphen (-) — reviewers and
+// Codex don't always emit the canonical em-dash. The summary is greedy and the
+// path/line are anchored to end-of-line, so an inner dash in the summary binds
+// to the LAST separator (not the first) and never corrupts the file field.
+// Severity match is case-insensitive ([p2] is accepted) and normalized upstream.
+const CLAIM_HEADER = /^- \[(P[123])\] (.+) [—–-] (.+):(\d+)\s*$/i;
 
 const claims = [];
 const lines = text.split('\n');
@@ -71,13 +77,19 @@ for (const line of lines) {
     flushClaim();
     const [, severity, summary, fileAbs, lineNum] = match;
     let file = fileAbs;
-    if (fileAbs.startsWith(repoRoot)) {
-      file = fileAbs.slice(repoRoot.length + 1);
+    // Strip the repo-root prefix only on a path boundary, and tolerate a
+    // trailing slash on --repo-root (so a sibling dir like "<root>-backend"
+    // is not mistaken for an in-repo path, and the first char isn't eaten).
+    const normRoot = repoRoot.replace(/\/+$/, '');
+    if (fileAbs === normRoot) {
+      file = '';
+    } else if (fileAbs.startsWith(normRoot + '/')) {
+      file = fileAbs.slice(normRoot.length + 1);
     }
     current = {
       id: `claim-${String(claims.length + 1).padStart(3, '0')}`,
       source,
-      severity,
+      severity: severity.toUpperCase(),
       file,
       line: parseInt(lineNum, 10),
       summary: summary.trim(),
@@ -91,8 +103,11 @@ flushClaim();
 console.log(JSON.stringify(claims, null, 2));
 
 if (claims.length === 0) {
-  console.error('[parse-claims] No claims found in input');
-  process.exit(2);  // Distinguish "clean" from "parse error"
+  // Zero claims is the common "clean review" outcome, not an error — exit 0 so a
+  // caller checking $? can't mistake a clean pass for a failure. Genuine I/O
+  // problems (missing/unreadable file) already exit 1 above.
+  console.error('[parse-claims] No claims found in input (clean)');
+  process.exit(0);
 }
 
 console.error(`[parse-claims] Parsed ${claims.length} claim(s) from ${source}`);

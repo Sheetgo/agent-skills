@@ -18,7 +18,12 @@ PROJECT_DIR=""
 # Parse args
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --project) PROJECT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
+        --project)
+            if [ $# -lt 2 ]; then
+                echo "Error: --project requires a path argument" >&2
+                exit 1
+            fi
+            PROJECT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
         *) PROJECT_DIR="$(cd "$1" && pwd)"; shift ;;
     esac
 done
@@ -62,76 +67,68 @@ if [ -z "$PROJECT_DIR" ]; then
     exit 0
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is required for project-level setup" >&2
+    exit 1
+fi
+
 echo "Project setup → $PROJECT_DIR"
 echo "  Writing to .claude/settings.local.json (gitignored)"
 
-# Use settings.local.json (gitignored) to avoid polluting committed settings
+# Use settings.local.json (gitignored) to avoid polluting committed settings.
+# Paths are passed to python via the environment (never interpolated into the
+# source) so a project path containing quotes can't break the inline script.
 SETTINGS="$PROJECT_DIR/.claude/settings.local.json"
+SRC="$SKILL_DIR/project-setup/settings-permissions.json"
 mkdir -p "$PROJECT_DIR/.claude"
 
-# Permissions
+# Permissions — create the file if absent, then merge any missing rules.
+# Merging is idempotent: it only appends rules not already present, so a re-run
+# (or a run after a partial install) repairs the set instead of skipping it.
 if [ ! -f "$SETTINGS" ]; then
-    cp "$SKILL_DIR/project-setup/settings-permissions.json" "$SETTINGS"
-    python3 -c "
-import json
-with open('$SETTINGS') as f: d = json.load(f)
+    cp "$SRC" "$SETTINGS"
+    SETTINGS="$SETTINGS" python3 -c "
+import json, os
+p = os.environ['SETTINGS']
+with open(p) as f: d = json.load(f)
 d.pop('_comment', None)
-with open('$SETTINGS', 'w') as f: json.dump(d, f, indent=2)
+with open(p, 'w') as f: json.dump(d, f, indent=2)
 " 2>/dev/null || true
     echo "  ✓ Created .claude/settings.local.json with permissions"
 else
-    if python3 -c "
-import json, sys
-with open('$SETTINGS') as f: d = json.load(f)
-perms = d.get('permissions', {}).get('allow', [])
-if any('fix-issues' in p for p in perms): sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        echo "  ✓ Permissions already present"
-    else
-        # Merge permissions into existing file
-        python3 -c "
-import json
-with open('$SKILL_DIR/project-setup/settings-permissions.json') as f: src = json.load(f)
-with open('$SETTINGS') as f: dst = json.load(f)
+    SETTINGS="$SETTINGS" SRC="$SRC" python3 -c "
+import json, os
+with open(os.environ['SRC']) as f: src = json.load(f)
+p = os.environ['SETTINGS']
+with open(p) as f: dst = json.load(f)
 existing = set(dst.get('permissions', {}).get('allow', []))
-new_perms = [p for p in src['permissions']['allow'] if p not in existing]
+new_perms = [x for x in src['permissions']['allow'] if x not in existing]
 if new_perms:
     dst.setdefault('permissions', {}).setdefault('allow', []).extend(new_perms)
-    with open('$SETTINGS', 'w') as f: json.dump(dst, f, indent=2)
+    with open(p, 'w') as f: json.dump(dst, f, indent=2)
     print(f'  ✓ Added {len(new_perms)} permission rules')
 else:
     print('  ✓ All permissions already present')
 " 2>/dev/null || echo "  ⚠ Could not merge permissions — add manually from settings-permissions.json"
-    fi
 fi
 
-# Hook registration
-if python3 -c "
-import json, sys
-with open('$SETTINGS') as f: d = json.load(f)
-hooks = d.get('hooks', {}).get('PostToolUse', [])
-for h in hooks:
-    for hk in h.get('hooks', []):
-        if 'gate-check-hook' in hk.get('command', ''):
-            sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-    echo "  ✓ Gate-check hook already registered"
-else
-    python3 -c "
-import json
-with open('$SETTINGS') as f: d = json.load(f)
-hooks = d.setdefault('hooks', {})
-post = hooks.setdefault('PostToolUse', [])
-post.append({
-    'matcher': 'Edit|Write',
-    'hooks': [{'type': 'command', 'command': 'bash ~/.claude/skills/fix-issues/project-setup/hooks/gate-check-hook.sh'}]
-})
-with open('$SETTINGS', 'w') as f: json.dump(d, f, indent=2)
-print('  ✓ Registered gate-check hook')
+# Hook registration (idempotent)
+SETTINGS="$SETTINGS" python3 -c "
+import json, os
+p = os.environ['SETTINGS']
+with open(p) as f: d = json.load(f)
+post = d.setdefault('hooks', {}).setdefault('PostToolUse', [])
+already = any(
+    'gate-check-hook' in hk.get('command', '')
+    for h in post for hk in h.get('hooks', [])
+)
+if already:
+    print('  ✓ Gate-check hook already registered')
+else:
+    post.append({'matcher': 'Edit|Write', 'hooks': [{'type': 'command', 'command': 'bash ~/.claude/skills/fix-issues/project-setup/hooks/gate-check-hook.sh'}]})
+    with open(p, 'w') as f: json.dump(d, f, indent=2)
+    print('  ✓ Registered gate-check hook')
 " 2>/dev/null || echo "  ⚠ Could not auto-register hook — add manually"
-fi
 
 echo ""
 echo "Done! Verify: open Claude Code in $PROJECT_DIR and type /fix-issues"

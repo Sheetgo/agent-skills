@@ -44,12 +44,14 @@ Run:
 ```bash
 ~/.claude/skills/code-review/scripts/run-codex.sh /tmp/codex-out.txt
 ```
-The wrapper auto-detects the diff base (PR base if open, else `origin/master`).
+The wrapper auto-detects the diff base (PR base if open, else the remote's default branch — `origin/HEAD`, falling back to `origin/main` then `origin/master`).
 
 ### (b) `superpowers:code-reviewer` subagent
 
 Dispatch via Agent tool with the prompt at
 `~/.claude/skills/code-review/prompts/code-reviewer.md`. Same diff scope.
+Substitute the prompt's `{{VARIABLE}}` placeholders (`{{DIFF_BASE}}`, `{{DIFF_HEAD}}`,
+`{{REPO_ROOT}}`, `{{BRANCH}}` — see its Variables section) with actual values before dispatch.
 
 **After the subagent returns**, save its full response to
 `/tmp/reviewer-out.txt` (e.g., via `Write` tool) so the parser in the
@@ -95,7 +97,7 @@ If both reviewers return zero claims:
 - Skip Layers 2-4. No subagents dispatched.
 - Write marker `.git/code-review-passed-<sha>` for the hook to consume:
   ```bash
-  touch "$(git rev-parse --git-dir)/code-review-passed-$(git rev-parse HEAD)"
+  touch "$(git rev-parse --git-common-dir)/code-review-passed-$(git rev-parse HEAD)"
   ```
   The marker filename embeds the HEAD SHA at time of approval. The
   per-project hook (see `project-setup/git-push-gate-hook.sh` and `SETUP.md`)
@@ -145,7 +147,9 @@ For each CONFIRMED + UNCERTAIN claim, dispatch 3 subagents IN PARALLEL (single
 message, three Agent tool calls). Each gets:
 - The full claim body
 - The Layer 2 notes
-- The prompt template from `~/.claude/skills/code-review/prompts/`
+- The prompt template from `~/.claude/skills/code-review/prompts/`, with every
+  `{{VARIABLE}}` placeholder (see each prompt's Variables section) substituted
+  with its actual value before dispatch — never pass raw `{{…}}` template text.
 
 ### Subagent A — Accuracy & business-rule
 

@@ -38,7 +38,7 @@ if (!fs.existsSync(sessionFile)) {
 
 // Find FIX files, sorted by number
 const fixFiles = fs.readdirSync(resolvedDir)
-  .filter(f => /^FIX-\d+\.md$/.test(f))
+  .filter(f => /^FIX-\d{3}\.md$/.test(f))
   .sort((a, b) => {
     const numA = parseInt(a.match(/FIX-(\d+)/)[1]);
     const numB = parseInt(b.match(/FIX-(\d+)/)[1]);

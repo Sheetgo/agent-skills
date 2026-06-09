@@ -7,15 +7,18 @@ Collection of AI agent skills and hooks for coding assistants.
 ```
 agent-skills/
 ├── skills/           # Skill definitions (SKILL.md files)
-│   ├── fix-issues/           # Bug fixing pipeline (v3.1.13)
+│   ├── code-review/          # 4-layer pre-merge verification pipeline
+│   ├── fix-issues/           # Bug fixing pipeline (v3.1.14)
 │   ├── generate-api-tests/
 │   ├── git-conventions/
 │   ├── implementation-audit/
 │   ├── plan-hardening/
 │   ├── session-notes/
 │   ├── squash-commits/
-│   └── undo-squash/
+│   ├── undo-squash/
+│   └── worklog/
 ├── commands/         # Command stubs for explicit invocation
+│   ├── code-review.md
 │   ├── commit.md
 │   ├── fix-issues.md
 │   ├── generate-api-tests.md
@@ -27,11 +30,13 @@ agent-skills/
 │   ├── squash-commits.md
 │   ├── squash-cleanup.md
 │   ├── start-work.md
-│   └── undo-squash.md
+│   ├── undo-squash.md
+│   └── worklog.md
 ├── hooks/            # Safety and validation hooks
 │   ├── dangerous-command-blocker.py
 │   ├── git-conventions.py
-│   └── session-checkpoint.py
+│   ├── session-checkpoint.py
+│   └── smart-compose.py
 └── docs/plans/       # Design documents
 ```
 
@@ -39,6 +44,7 @@ agent-skills/
 
 | Skill | Description |
 |-------|-------------|
+| `code-review` | 4-layer pre-merge verification pipeline. Treats AI-reviewer findings as claims to verify before pushing. Optional per-project git-push gate (see `SETUP.md`). |
 | `fix-issues` | Autonomous bug fixing pipeline with 3-gate verification. Investigates, diagnoses, fixes, and proves fixes work. User-level install; optional per-project settings (see `SETUP.md`). |
 | `generate-api-tests` | Framework-agnostic API test generator. Creates YAML integration tests for go-runner and CI/CD pipelines. |
 | `git-conventions` | Branch naming and commit format conventions. Enforces `type: Description` format via hook. |
@@ -47,11 +53,13 @@ agent-skills/
 | `session-notes` | Session context management — status debrief, persist findings, or generate handoff prompt. |
 | `implementation-audit` | Dispatch parallel reviewers to validate implementation against the plan. |
 | `undo-squash` | Restore commits to pre-squash state. Use when grouping was wrong. |
+| `worklog` | Generate deliverable-focused worklogs for Jira from git history + Claude Code session logs, grouped by ticket. |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `/code-review` | Run the 4-layer pre-merge verification pipeline before pushing or opening a PR. |
 | `/commit` | Create a git commit. Alias for `commit-commands:commit` plugin skill. |
 | `/fix-issues` | Autonomous bug fixing. Investigate → diagnose → fix → verify with gate checks. |
 | `/start-work` | Initialize a feature or fix branch. Invokes git-conventions skill. |
@@ -64,6 +72,7 @@ agent-skills/
 | `/session-handoff` | Generate a resumption prompt for starting a fresh session. |
 | `/implementation-audit` | Audit implementation against the plan. Dispatches parallel reviewers. |
 | `/plan-hardening` | Validate a design document. |
+| `/worklog` | Generate a ticket-grouped worklog from git history + session logs for Jira reporting. |
 
 ## Hooks
 
@@ -141,6 +150,10 @@ Add the hook configuration to `~/.claude/settings.json`:
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/git-conventions.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/smart-compose.py"
           }
         ]
       },
@@ -159,6 +172,8 @@ Add the hook configuration to `~/.claude/settings.json`:
 ```
 
 If you already have content in `settings.json`, merge the `hooks` object with existing content.
+
+> **Ordering matters:** `smart-compose.py` must be **last** in the `Bash` hooks array. It auto-approves composed commands, so any deny-capable hook (e.g., `dangerous-command-blocker.py`, `git-conventions.py`) must run before it to retain the ability to block.
 
 **Restart Claude Code** for hooks to take effect.
 

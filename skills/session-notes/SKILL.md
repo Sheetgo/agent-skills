@@ -1,4 +1,5 @@
 ---
+name: session-notes
 description: "Internal skill — not invoked directly. Use /session-status, /session-persist, or /session-handoff instead."
 ---
 
@@ -141,7 +142,7 @@ After completing the analysis phase, persist the findings to files.
 After successful persist and commit, create a marker file:
 
 ```bash
-SANITIZED_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+SANITIZED_BRANCH=$(echo "$BRANCH" | sed 's#/#%2F#g')   # percent-encode "/" (feat/x ≠ feat-x)
 mkdir -p ".claude/sessions/${SANITIZED_BRANCH}"
 date -u +"%Y-%m-%dT%H:%M:%S%z" > ".claude/sessions/${SANITIZED_BRANCH}/session-persist-done"
 ```

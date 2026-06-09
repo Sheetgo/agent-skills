@@ -22,7 +22,7 @@ Check in order of preference:
 
 ```bash
 BRANCH=$(git branch --show-current)
-SANITIZED_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+SANITIZED_BRANCH=$(echo "$BRANCH" | sed 's#/#%2F#g')   # percent-encode "/" (feat/x ≠ feat-x)
 SESSION_DIR=".claude/sessions/${SANITIZED_BRANCH}"
 
 if [ -f "$SESSION_DIR/last-squash.json" ]; then

@@ -119,7 +119,7 @@ the file is again authoritative and work continues from there.
 ## Session File Sections Reference
 
 The session file (`docs/fix-sessions/YYYY-MM-DD_HH-MM.md`) is created from
-`.claude/templates/FIX_SESSION.md`. Here's what each section contains:
+`~/.claude/skills/fix-issues/project-setup/templates/SESSION.md`. Here's what each section contains:
 
 | Section | Purpose | When Updated |
 |---------|---------|--------------|

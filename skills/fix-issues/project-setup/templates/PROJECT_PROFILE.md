@@ -388,13 +388,8 @@ Mismatch handling:
 
 ## Auto-discovery
 
-This profile is auto-generated on first use of the fix-issues skill in a project. Trigger:
-
-```bash
-node ~/.claude/skills/fix-issues/project-setup/scripts/discover-profile.cjs <project-root>
-```
-
-The discovery script dispatches a profiler subagent that:
+This profile is auto-generated on first use of the fix-issues skill in a project. When it
+is missing, the skill dispatches a profiler subagent (see SKILL.md Phase 0.4) that:
 - Reads `package.json` / `pyproject.toml` / `Cargo.toml` / `go.mod` to populate Section A
 - Reads `CLAUDE.md` files and design docs to populate Section G
 - Greps for known async primitives, error patterns, mock files to populate Section B/E/F
