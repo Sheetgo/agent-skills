@@ -13,8 +13,14 @@ before they cost a review cycle. Each layer either confirms the path is clean
 or feeds the next layer with verified claims.
 
 **Core principle:** AI reviewer findings are CLAIMS to be verified, not
-verdicts to be implemented. Codex is short-sighted, can be lazy, and misses
-business-rule context. Verify before acting.
+verdicts to be implemented. AI reviewers are short-sighted, can be lazy, and
+miss business-rule context (the Codex CLI included). Verify before acting.
+
+**Two different "Codex"es — don't conflate them:**
+- **Codex CLI** — a *local* reviewer this skill *runs* as Layer 1(a) (`run-codex.sh`). One of two parallel Layer-1 reviewers; optional (falls back to the reviewer subagent alone if absent).
+- **GitHub Codex** — the *remote* PR-review bot this skill exists to *pre-empt*. It is **not a component** of this skill; where this doc names it, that's the slow post-push loop the skill makes unnecessary — motivation, not mechanism.
+
+This skill's scope is the **local 4-layer review** only. Throughout: "Codex CLI" = the local Layer-1 reviewer; "GitHub Codex" = the remote bot (context, never a step).
 
 ## When to use
 
@@ -31,7 +37,7 @@ business-rule context. Verify before acting.
 - During mid-implementation iterations (use after the work is finished)
 - For docs-only changes (use a marker file or commit-message convention to skip)
 - For experimental WIP branches with no intent to merge
-- During an active fix-cycle where you're already responding to specific Codex
+- During an active fix-cycle where you're already responding to specific review
   findings (use `/fix-issues` instead)
 
 ## Layer 1 — Parallel claim-finding
@@ -57,7 +63,8 @@ Substitute the prompt's `{{VARIABLE}}` placeholders (`{{DIFF_BASE}}`, `{{DIFF_HE
 `/tmp/reviewer-out.txt` (e.g., via `Write` tool) so the parser in the
 Aggregation step can read it. The Codex side handles this automatically
 via `run-codex.sh`; the reviewer side requires explicit file write because
-subagent responses come back to the main thread, not to a file.
+subagent responses come back to the main thread, not to a file. (The "Codex
+side" = the Codex CLI from Layer 1(a).)
 
 **Run BOTH in parallel** (single message with two Agent tool calls).
 
@@ -83,8 +90,8 @@ detected. Consider running /security-review in parallel before final verdict."
 
 ### Failure modes
 
-- **Codex unavailable** (run-codex.sh exits 1 quota-hit): continue with
-  reviewer-only. Tag claims as `codex-skipped`.
+- **Codex CLI unavailable** (run-codex.sh exits non-zero — not installed, not
+  authenticated, or quota-hit): continue with reviewer-only. Tag claims as `codex-skipped`.
 - **Both unavailable**: exit early with verdict `MANUAL REVIEW NEEDED`:
   "Layer 1 unavailable, manual review required before push."
 - **One returns claims, the other returns clean**: still proceed (single-signal
@@ -203,7 +210,7 @@ recommendation:
 |---|---|
 | **PUSH READY** | All claims dropped at L1/L2/L3, OR all surviving claims hit NOT_REPRODUCIBLE / OUT_OF_SCOPE / INTENTIONAL |
 | **FIX FIRST** | At least one claim REPRODUCED with severity ≥ P2 |
-| **DEFER + DOCUMENT** | Claim REPRODUCED but explicitly out-of-family (Subagent B flagged out_of_family + age=pre-existing). Drafts deferred-items entry (+ thread reply + commit message if PR-wired). |
+| **DEFER + DOCUMENT** | Claim REPRODUCED but explicitly out-of-family (Subagent B flagged out_of_family + age=pre-existing). Drafts a deferred-items entry + a deferral commit message. |
 | **MANUAL REVIEW NEEDED** | Layer 1 incomplete (BOTH reviewers unavailable) OR many OUT_OF_SCOPE claims |
 
 ### FIX FIRST — fix-issues hand-off
@@ -222,8 +229,8 @@ Verdict: FIX FIRST
 
 ### FIX-001
 **File:** path/to/file.ts:123
-**Severity:** P2 (independent assessment) / P2 (Codex stamped)
-**Source:** found by codex + reviewer (cross-validated)
+**Severity:** P2 (independent assessment) / P2 (Codex CLI stamped)
+**Source:** found by Codex CLI + reviewer (cross-validated)
 **Body:** <claim body>
 **Layer 3 panel:**
 - Accuracy: REAL_BUG (with citations)
@@ -247,26 +254,11 @@ Verdict: FIX FIRST
 
 ### DEFER + DOCUMENT — draft-not-decide artifacts
 
-When verdict is DEFER + DOCUMENT, the skill drafts artifacts the human posts.
-
-**Detect PR context:**
-```bash
-gh pr view <branch> --json baseRefName,number 2>/dev/null
-```
-
-If a PR is open AND there's an unresolved Codex thread on the affected
-file:line, query for the thread:
-```bash
-gh api graphql -f query='{ repository(owner: "X", name: "Y") { pullRequest(number: N) { reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { path line body } } } } } } }' \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .comments.nodes[0].path=="<claim file>" and .comments.nodes[0].line==<claim line>)'
-```
+When verdict is DEFER + DOCUMENT, the skill drafts artifacts the human applies — it never defers, commits, or posts on its own.
 
 **Drafts produced** (location: `docs/code-review-runs/<run>/drafts/`):
-
-| Always | Conditional on PR + thread |
-|---|---|
-| `deferred-items-entry.md` | `codex-reply.md` |
-| | `deferral-commit-message.md` |
+- `deferred-items-entry.md`
+- `deferral-commit-message.md`
 
 **`deferred-items-entry.md` template** (uses the format from
 `docs/deferred-items.md` of the consuming project):
@@ -274,7 +266,7 @@ gh api graphql -f query='{ repository(owner: "X", name: "Y") { pullRequest(numbe
 ~~~markdown
 ### <CLAIM_SUMMARY>
 
-**Priority:** <SEVERITY> (per Codex)
+**Priority:** <SEVERITY> (independent assessment / Codex CLI stamp)
 **Parked:** <YYYY-MM-DD>
 **Context:** <CLAIM_BODY paraphrased to 2-3 sentences>
 
@@ -287,37 +279,27 @@ gh api graphql -f query='{ repository(owner: "X", name: "Y") { pullRequest(numbe
 **Acceptance criteria when revisited:**
 - <derived from claim>
 
-**Cross-reference:** Codex thread `<thread-id>` on PR #<N>.
+**Cross-reference:** code-review run `<timestamp>-<branch>`.
 
 **Decision:** Deferred — <rationale>
-~~~
-
-**`codex-reply.md` template** (1-3 sentences with commit SHA placeholder):
-
-~~~markdown
-Acknowledged and deferred to next release per `<COMMIT_SHA>` (deferred-items entry).
-<Subagent B's out-of-family rationale, 1 sentence>. Will be addressed in <next release / fresh-session audit>.
 ~~~
 
 **`deferral-commit-message.md` template:**
 
 ~~~
-docs: Defer Codex <SEVERITY> (<CLAIM_FILE>:<LINE> <one-line>)
+docs: Defer <SEVERITY> (<CLAIM_FILE>:<LINE> <one-line>)
 
-Codex flagged on PR #<N> review of <REVIEW_COMMIT>. Out-of-family from this
-PR's scope — <rationale from Subagent B>.
+Flagged by local code-review (Layer 1: Codex CLI + reviewer subagent), out-of-family
+from this branch's scope — <rationale from Subagent B>.
 
 Deferred per user direction:
 - <bullet from Subagent C if relevant>
 - Will be bundled with next release / planned audit
-
-Codex thread: <thread-id>
 ~~~
 
 The skill **never**:
 - Decides to defer (the user approves the verdict)
 - Auto-commits the deferred-items entry (the user stages and commits)
-- Auto-posts on GitHub (the user posts, resolves threads, minimizes reviews)
 
 The console output includes the apply-to-disk commands:
 ```
@@ -328,27 +310,28 @@ To apply:
   cat docs/code-review-runs/<run>/drafts/deferred-items-entry.md >> docs/deferred-items.md
   git add docs/deferred-items.md
   git commit -F docs/code-review-runs/<run>/drafts/deferral-commit-message.md
-  # then post the codex-reply.md text on the PR thread + resolve + minimize
 ```
+
+> **Out of scope:** responding to a **GitHub Codex** PR review (querying the PR thread, drafting a reply, resolving/minimizing) is a separate post-push concern, not part of this local skill. This skill stops at the deferred-items entry + commit message; posting on a PR is the human's call with their own tooling.
 
 ## Red flags — STOP, do not push if you catch yourself thinking these
 
 | Rationalization | Reality |
 |---|---|
-| "GitHub Codex will catch anything we miss" | Codex is lazy (1-2 findings per pass). Each push = a new review cycle = 5-10 min round trip. Run code-review locally before push to catch what GitHub Codex would catch, faster. |
+| "GitHub Codex will catch anything we miss" | GitHub Codex is lazy (1-2 findings per pass). Each push = a new review cycle = 5-10 min round trip. Run code-review locally before push to catch what GitHub Codex would catch, faster. |
 | "Tests pass, that's enough" | Tests pass is necessary but not sufficient. Ask whether the CHANGED path has test coverage, not just whether the suite is green. The changed lines you just wrote may have zero coverage even when the suite is 100% green. |
 | "Code review is what GitHub does" | GitHub Codex review is reactive (after push). code-review is proactive (before push). The point is to NOT spend a Codex cycle if local tools can find it. |
-| "We can fix issues in follow-up PRs" | Each follow-up PR = another Codex round = compounding cycle time. The omnibus-and-defer playbook this skill produces is faster. |
+| "We can fix issues in follow-up PRs" | Each follow-up PR = another GitHub Codex round = compounding cycle time. The omnibus-and-defer playbook this skill produces is faster. |
 | "User said ship by 6pm, just ship" | Time pressure does NOT exempt verification. The skill produces a structured-defer playbook for genuine out-of-family findings, so "ship anyway" is fast and correct, not skip-the-review. P1 findings keep their risk profile regardless of clock. |
 | "The comment says it's intentional" | Verify the comment claim. Run `git blame` on the comment to see when it was added. Read the asymmetry logic yourself. Don't trust comments at face value — they go stale. |
-| "Codex only flagged this one site, just fix this one" | Codex is short-sighted. The skill's Layer 3 Subagent C explicitly hunts sister-instances. Fix-the-family, not fix-the-site. When fixing any Codex finding, always grep for the same pattern across the module/codebase before pushing. |
+| "The reviewer only flagged this one site, just fix this one" | AI reviewers are short-sighted. The skill's Layer 3 Subagent C explicitly hunts sister-instances. Fix-the-family, not fix-the-site. When fixing any finding, always grep for the same pattern across the module/codebase before pushing. |
 | "GitHub will give us a second pass anyway" | A GitHub Codex round-trip costs 7-10 min plus reply/resolve/minimize churn. In production releases it costs an additional Apps-Script-version-bump and a partner-publish. Local pre-flight is cheaper than a post-push finding cycle. |
 
 ## Common mistakes (Layer 1 scope)
 
-- **Running Codex with `--uncommitted` instead of `--base`** — only sees
+- **Running the Codex CLI with `--uncommitted` instead of `--base`** — only sees
   working-tree diff, misses prior commits. Use the wrapper script.
-- **Dispatching reviewer-subagent with a wrong scope** — must match Codex's
+- **Dispatching reviewer-subagent with a wrong scope** — must match the Codex CLI's
   scope. Both review the same diff or the cross-check is meaningless.
 - **Acting on first reviewer's findings before the second returns** — wait for
   both to finish, deduplicate, then proceed.
