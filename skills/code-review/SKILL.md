@@ -7,6 +7,11 @@ description: Use before pushing a branch, opening a PR, updating an existing PR,
 
 ## Overview
 
+> **This is a Skill, not an agent.** Invoke it with the Skill tool (or `/code-review`)
+> — never as an Agent-tool `subagent_type`. There is no agent named `code-review` or
+> `code-reviewer`. The reviewers this skill dispatches are plain `general-purpose`
+> Agent-tool invocations driven by the bundled prompt files in `prompts/`.
+
 A 4-layer pre-merge verification pipeline. Replaces the push-and-wait-for-
 GitHub-Codex feedback loop with local validation that surfaces real issues
 before they cost a review cycle. Each layer either confirms the path is clean
@@ -52,10 +57,13 @@ Run:
 ```
 The wrapper auto-detects the diff base (PR base if open, else the remote's default branch — `origin/HEAD`, falling back to `origin/main` then `origin/master`).
 
-### (b) `superpowers:code-reviewer` subagent
+### (b) code-reviewer subagent
 
-Dispatch via Agent tool with the prompt at
-`~/.claude/skills/code-review/prompts/code-reviewer.md`. Same diff scope.
+Dispatch via the Agent tool with **`subagent_type: general-purpose`**, passing the
+prompt at `~/.claude/skills/code-review/prompts/code-reviewer.md`. There is **no**
+dedicated agent type for this — `code-reviewer` / `superpowers:code-reviewer` are NOT
+registered agents; the reviewer role lives entirely in that prompt file, which a
+`general-purpose` agent executes. Same diff scope.
 Substitute the prompt's `{{VARIABLE}}` placeholders (`{{DIFF_BASE}}`, `{{DIFF_HEAD}}`,
 `{{REPO_ROOT}}`, `{{BRANCH}}` — see its Variables section) with actual values before dispatch.
 
@@ -66,7 +74,8 @@ via `run-codex.sh`; the reviewer side requires explicit file write because
 subagent responses come back to the main thread, not to a file. (The "Codex
 side" = the Codex CLI from Layer 1(a).)
 
-**Run BOTH in parallel** (single message with two Agent tool calls).
+**Run BOTH in parallel** — a single message containing the Layer 1(a) Bash call
+(`run-codex.sh`) and the Layer 1(b) Agent call (`subagent_type: general-purpose`).
 
 ### Aggregation
 
@@ -150,8 +159,8 @@ For EACH claim, do this in the main thread BEFORE dispatching subagents:
 
 ## Layer 3 — Subagent panel (3 perspectives, parallel)
 
-For each CONFIRMED + UNCERTAIN claim, dispatch 3 subagents IN PARALLEL (single
-message, three Agent tool calls). Each gets:
+For each CONFIRMED + UNCERTAIN claim, dispatch 3 subagents IN PARALLEL via the Agent
+tool (single message, three calls, each `subagent_type: general-purpose`). Each gets:
 - The full claim body
 - The Layer 2 notes
 - The prompt template from `~/.claude/skills/code-review/prompts/`, with every

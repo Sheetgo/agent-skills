@@ -644,7 +644,10 @@ If ❌ → resume implementer. Max 2 cycles. Writing "Verified" yourself is NOT 
 Invoke: Skill tool, skill="superpowers:requesting-code-review"
 
 Get BASE_SHA (before fix) and HEAD_SHA (after fix).
-Dispatch superpowers:code-reviewer subagent with BASE_SHA, HEAD_SHA, fix description.
+Follow that skill — it dispatches a code-reviewer subagent (Agent tool,
+subagent_type=general-purpose, filling its bundled `code-reviewer.md` template).
+There is no `superpowers:code-reviewer` agent type; the role is the prompt template,
+run by a general-purpose agent. Pass BASE_SHA, HEAD_SHA, and the fix description.
 Act on feedback: Critical/Important → implementer fixes. Minor → note in Section 3. Max 2 cycles.
 
 LIGHT scope: Document skip in Section 3: "Code quality review skipped (LIGHT scope)."

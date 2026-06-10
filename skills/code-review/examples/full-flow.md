@@ -34,7 +34,7 @@ Both reviewers run in parallel against the same diff scope (origin/master..HEAD)
   a user gesture vs system observation, OR use a probe-only action variant.
 ```
 
-### (b) `superpowers:code-reviewer` subagent output (excerpt)
+### (b) code-reviewer subagent (general-purpose) output (excerpt)
 
 ```
 - [P2] Probe write triggers spurious dirty flag — /Users/willvargas/Development/Sheetgo/as-add-on/client/src/lib/validation/useFileTrashedProbe.ts:81
