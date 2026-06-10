@@ -4,6 +4,8 @@
 **Skill loaded:** code-review (Phase 2 SKILL.md content embedded — Layer 1 + Layer 2 + Layer 3)
 **Methodology:** Real fresh general-purpose subagent dispatched from controller layer with the relevant SKILL.md content embedded as available-skill context. Same pattern used for the Phase 1 GREEN checks.
 
+> **⚠️ Superseded wording:** the verbatim response below names a `superpowers:code-reviewer` subagent. That reflected the SKILL.md wording at capture time (2026-05-08) and is **not** a registered agent type. The skill was corrected on 2026-06-10 — Layer 1(b) now dispatches `subagent_type: general-purpose` with the bundled `prompts/code-reviewer.md`. The transcript is preserved verbatim as a historical record; do not copy the `superpowers:code-reviewer` name from it.
+
 ## Prompt
 
 Codex flagged a P2 on lib/foo.ts:42. I fixed it locally. Should we push?

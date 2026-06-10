@@ -22,7 +22,7 @@
 
 **The fix:** four layers of local verification before push.
 
-- **Layer 1**: parallel Codex CLI (with `--base origin/<base>`) + `superpowers:code-reviewer` subagent. Cross-validation. Both clean → exit early as PUSH READY.
+- **Layer 1**: parallel Codex CLI (with `--base origin/<base>`) + a `general-purpose` code-reviewer subagent (filling `prompts/code-reviewer.md`; there is no `superpowers:code-reviewer` agent type). Cross-validation. Both clean → exit early as PUSH READY.
 - **Layer 2**: main-thread self-check on each surviving claim — read the cited code, trace the data path, `git blame` for age, grep for documented intent.
 - **Layer 3**: 3-subagent panel in parallel — Accuracy (REAL_BUG / INTENTIONAL / NOT_REPRODUCIBLE), Severity (independent stamp + comparison + age + out-of-family flag), Sister-instances (find every place the pattern occurs).
 - **Layer 4**: live test (Playwright / clasp run / component test / unit test) appropriate to the claim type.
@@ -282,7 +282,7 @@ This kind of cross-section handoff gap is exactly what the final holistic review
 
 The final reviewer flagged one Minor not addressed in this build:
 
-- **`superpowers:code-reviewer` naming ambiguity** — SKILL.md references `superpowers:code-reviewer` in the Layer 1(b) heading and inline. This is a subagent type, not a registered skill. Body text correctly says "Dispatch via Agent tool with the prompt at `prompts/code-reviewer.md`" but the surrounding cross-references could mislead an agent into trying `Skill tool: code-reviewer`. Low-risk per the reviewer; worth a polish-pass clarifying note.
+- **`superpowers:code-reviewer` naming ambiguity** — ✅ RESOLVED 2026-06-10 (branch `feat/SG-13911-fix-issues-v4-universal-properties`). SKILL.md Layer 1(b) now dispatches `subagent_type: general-purpose` with the bundled `prompts/code-reviewer.md`, and an Overview callout states there is no `code-reviewer`/`superpowers:code-reviewer` agent type. _Original note:_ the old heading named `superpowers:code-reviewer` as if it were a registered agent — actually a (non-existent) subagent type, not a registered skill — which could mislead an agent into trying `Skill tool: code-reviewer` or dispatching a phantom agent type. Surfaced again (and confirmed fully fixed across the family) by a dogfood run of the code-review skill on its own diff.
 - **FIX FIRST vs DEFER + DOCUMENT priority for P2+ out-of-family** — verdict table doesn't explicitly state precedence when a claim is REPRODUCED + ≥P2 + out-of-family. Practical resolution is "in-family P2+ → FIX FIRST; out-of-family → DEFER" but the table doesn't say this. Worth a one-line priority note in a future polish pass.
 
 ### Acceptance criteria — verified at MVP completion
@@ -316,7 +316,7 @@ Phase 5 work scope:
 
 Cleanup tasks deferred from MVP (low priority):
 - Remove `.gitkeep` files from `prompts/`, `scripts/`, `project-setup/`, `examples/` now that real files populate them.
-- Clarify the `superpowers:code-reviewer` naming ambiguity in SKILL.md.
+- ✅ DONE (2026-06-10): Clarified the `superpowers:code-reviewer` naming ambiguity in SKILL.md — Layer 1(b) now uses `subagent_type: general-purpose`.
 - Add precedence rule for FIX FIRST vs DEFER + DOCUMENT to the verdict table.
 
 The branch is now clean and shippable. Next: merge this branch (it's mixed-scope with the in-flight fix-issues v4 work, so the merge should split the code-review skill from the fix-issues v4 work into separate PRs OR ship as one) — that's a brainstorming question for the user, not a writing-plans question.
@@ -377,5 +377,5 @@ Phase 5 (first-adoption) is what remains:
 
 Also still deferred (low priority):
 - `.gitkeep` cleanup in `prompts/`, `scripts/`, `project-setup/`, `examples/`.
-- `superpowers:code-reviewer` naming-ambiguity clarification in SKILL.md.
+- ✅ DONE (2026-06-10): `superpowers:code-reviewer` naming-ambiguity clarification in SKILL.md.
 - FIX FIRST vs DEFER + DOCUMENT precedence rule for P2+ REPRODUCED + out-of-family edge case.

@@ -645,7 +645,9 @@ Invoke: Skill tool, skill="superpowers:requesting-code-review"
 
 Get BASE_SHA (before fix) and HEAD_SHA (after fix).
 Follow that skill — it dispatches a code-reviewer subagent (Agent tool,
-subagent_type=general-purpose, filling its bundled `code-reviewer.md` template).
+subagent_type=general-purpose, filling **that skill's own** `code-reviewer.md`
+template, the one bundled under `requesting-code-review/` — not this repo's
+`code-review/prompts/code-reviewer.md`, which has a different placeholder schema).
 There is no `superpowers:code-reviewer` agent type; the role is the prompt template,
 run by a general-purpose agent. Pass BASE_SHA, HEAD_SHA, and the fix description.
 Act on feedback: Critical/Important → implementer fixes. Minor → note in Section 3. Max 2 cycles.

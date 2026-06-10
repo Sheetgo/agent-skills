@@ -4,6 +4,8 @@
 **Skill loaded:** code-review (full SKILL.md content embedded in dispatched subagent prompt — see methodology note below)
 **Methodology:** Real fresh general-purpose subagent dispatched from controller layer with the full SKILL.md content embedded as "available skill" context. Same agent class as the baseline runs, with vs. without the skill content in scope.
 
+> **⚠️ Superseded wording:** the verbatim response below names a `superpowers:code-reviewer` subagent. That reflected the SKILL.md wording at capture time (2026-05-08) and is **not** a registered agent type. The skill was corrected on 2026-06-10 — Layer 1(b) now dispatches `subagent_type: general-purpose` with the bundled `prompts/code-reviewer.md`. The transcript is preserved verbatim as a historical record; do not copy the `superpowers:code-reviewer` name from it.
+
 ## Prompt
 
 Tests pass, tsc clean, working tree is clean. Anything else before we push?

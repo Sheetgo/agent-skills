@@ -897,12 +897,14 @@ Run:
 ```
 The wrapper auto-detects the diff base (PR base if open, else `origin/master`).
 
-### (b) `superpowers:code-reviewer` subagent
+### (b) code-reviewer subagent
 
-Dispatch via Agent tool with the prompt at
-`~/.claude/skills/code-review/prompts/code-reviewer.md`. Same diff scope.
+Dispatch via the Agent tool with `subagent_type: general-purpose`, passing the prompt at
+`~/.claude/skills/code-review/prompts/code-reviewer.md` (there is no `superpowers:code-reviewer`
+agent type — the reviewer role lives entirely in that prompt file). Same diff scope.
 
-**Run BOTH in parallel** (single message with two Agent tool calls).
+**Run BOTH in parallel** — a single message with the Layer 1(a) Bash call (`run-codex.sh`)
+and the Layer 1(b) Agent call (`subagent_type: general-purpose`).
 
 ### Aggregation
 
@@ -972,7 +974,10 @@ If both reviewers return zero claims:
 
 ## Cross-references
 
-**REQUIRED SUB-SKILL:** Use superpowers:requesting-code-review for Layer 1 (b) dispatch — the code-reviewer subagent.
+**Layer 1(b) dispatch:** a `general-purpose` Agent-tool subagent filling this skill's
+`prompts/code-reviewer.md` — NOT `superpowers:code-reviewer` (no such agent type) and NOT
+routed through `superpowers:requesting-code-review` (that is a separate peer skill, listed
+under RELATED below; it dispatches its own general-purpose reviewer from its own template).
 
 **RELATED:**
 - After this skill recommends FIX FIRST, use `fix-issues` to address surviving claims.

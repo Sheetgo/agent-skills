@@ -33,7 +33,7 @@ The skill is named **`code-review`** despite its multi-layer mechanic, because t
 Two reviewers run **in parallel**, both against the same diff scope:
 
 - **(a) Codex CLI**: `codex review --base <base-ref>` (Codex CLI from `/Applications/Codex.app/Contents/Resources/codex`). Returns markdown with severity tags (P1/P2/P3) and `file:line` anchors.
-- **(b) `superpowers:code-reviewer` subagent**: dispatched via Agent tool with the same diff. Prompted to (1) find correctness issues, (2) hunt for sister-instances of any anti-pattern, (3) stamp severity, (4) cite `file:line` per finding.
+- **(b) code-reviewer subagent**: dispatched via the Agent tool with `subagent_type: general-purpose` (there is no `superpowers:code-reviewer` agent type — the reviewer role is the bundled `prompts/code-reviewer.md` template), same diff. Prompted to (1) find correctness issues, (2) hunt for sister-instances of any anti-pattern, (3) stamp severity, (4) cite `file:line` per finding.
 
 **Diff base (hybrid)**: if `gh pr view <branch>` returns an open PR → use its base. Else → `origin/master`. Pre-PR development uses master; in-PR development matches GitHub Codex's scope exactly.
 
