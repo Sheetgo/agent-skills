@@ -52,22 +52,41 @@ const text = fs.readFileSync(inputFile, 'utf8');
 // path/line are anchored to end-of-line, so an inner dash in the summary binds
 // to the LAST separator (not the first) and never corrupts the file field.
 // Severity match is case-insensitive ([p2] is accepted) and normalized upstream.
-const CLAIM_HEADER = /^- \[(P[123])\] (.+) [—–-] (.+):(\d+)\s*$/i;
+//
+// The line anchor accepts a bare line ("file.ts:81") OR a RANGE ("file.ts:860-860",
+// "file.ts:120-145"): the Codex CLI routinely emits ranges, and the old bare-`:(\d+)$`
+// anchor silently failed to match them → a real Codex review parsed as ZERO claims
+// (SG-13996, 2026-06-19). We capture the START line and tolerate an optional `-END`.
+//
+// The RANGE delimiter takes the SAME dash class as the summary separator (and
+// tolerates spaces around it). An en-dash is the typographically correct character
+// for a numeric range ("120–145"), so it is at least as likely here as in the
+// separator. A trailing period/comma is likewise tolerated: these headers are
+// LLM-written bullet lines, which routinely end in sentence punctuation.
+//
+// Every one of those shapes is a SILENT-LOSS risk, which is why the anchor is
+// permissive: an unmatched header does not merely vanish — it is absorbed into the
+// PREVIOUS claim's body, so the tool reports a plausible non-zero claim count while
+// a real finding is invisible (exit 0, no warning). Prefer over-matching here.
+const CLAIM_HEADER = /^- \[(P[123])\] (.+) [—–-] (.+):(\d+)(?:\s*[—–-]\s*\d+)?[.,;]?\s*$/i;
 
 const claims = [];
 const lines = text.split('\n');
 let current = null;
+let currentHeader = null; // the header EXACTLY as it appeared, for `raw`
 let bodyLines = [];
 
 function flushClaim() {
   if (current) {
     current.body = bodyLines.join('\n').trim();
-    current.raw = current.body
-      ? `- [${current.severity}] ${current.summary} — ${current.file}:${current.line}\n${current.body}`
-      : `- [${current.severity}] ${current.summary} — ${current.file}:${current.line}`;
+    // `raw` is documented as the verbatim section from the input, so echo the
+    // original header rather than rebuilding it — a rebuilt one drops the range
+    // suffix ("a.ts:120-145" → "a.ts:120") and rewrites the separator.
+    current.raw = current.body ? `${currentHeader}\n${current.body}` : currentHeader;
     claims.push(current);
   }
   current = null;
+  currentHeader = null;
   bodyLines = [];
 }
 
@@ -86,6 +105,7 @@ for (const line of lines) {
     } else if (fileAbs.startsWith(normRoot + '/')) {
       file = fileAbs.slice(normRoot.length + 1);
     }
+    currentHeader = line;
     current = {
       id: `claim-${String(claims.length + 1).padStart(3, '0')}`,
       source,

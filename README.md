@@ -80,14 +80,31 @@ agent-skills/
 |------|-------------|
 | `dangerous-command-blocker.py` | Blocks catastrophic commands (`rm -rf`), protects critical paths. |
 | `git-conventions.py` | Validates commit messages follow `type: Description` format. |
-| `session-checkpoint.py` | Intercepts `finishing-a-development-branch` to force documentation update. |
+| `session-checkpoint.py` | Three-gate finishing checkpoint. Blocks `finishing-a-development-branch` until docs (`/session-persist`), code review (`/code-review`), and real validation (`record-validation.cjs`) all pass for HEAD. Gates 2 & 3 reuse the code-review skill's Node checkers (fail open if not installed). |
 | `smart-compose.py` | Auto-approves composed Bash commands where every sub-command matches an allow rule. Includes heredoc safe-path for git commits. |
+
+### Finishing gate (`session-checkpoint.py`) — extra setup
+
+Gates 2 & 3 shell out to the `code-review` skill's Node checkers. **If the `code-review` skill isn't symlinked into `~/.claude/skills/`, those two gates silently fail open** (only the docs gate is enforced) — so install it too: see `skills/code-review/SETUP.md`.
+
+The hook only fires on the `finishing-a-development-branch` skill, which ships in the external **`superpowers` plugin** — without that plugin installed, the hook is a harmless no-op.
+
+**Validation evidence never enters your repo.** `record-validation.cjs` copies the artifacts you point it at into `<git-common-dir>/validation-evidence/<sha>/`, so the working tree of every repo you use this in stays pristine — nothing to accidentally `git add`, commit, or push, and no per-repo `.gitignore` entry needed.
+
+Confirm the gate is actually enforcing, not quietly passing:
+
+```bash
+echo '{"tool_name":"Skill","tool_input":{"skill":"finishing-a-development-branch"},"cwd":"'"$(pwd)"'"}' \
+  | python3 ~/.claude/hooks/session-checkpoint.py
+```
+
+Empty output = all gates pass. A `"permissionDecision": "deny"` JSON = the gate is working and tells you which gate failed and how to satisfy it. Decisions are logged to `$TMPDIR/finish-gate-diag.log`. Golden order: `/squash-commits` → `/code-review` → validate → `/session-persist` → finish.
 
 ## Dependencies
 
 ### Hooks (general)
 
-All hooks require **Python 3.6+** (uses only standard library modules: `json`, `sys`, `re`).
+All hooks require **Python 3.6+** (standard library only). The finishing gate additionally needs **Node ≥16** and **git ≥2.22** (see `skills/code-review/SETUP.md` for the full prerequisite table). Targets macOS and Linux; on Windows use WSL.
 
 ### dangerous-command-blocker.py
 
@@ -111,12 +128,14 @@ alias trash='trash-put'
 
 Symlink to your Claude Code config directory:
 
-```bash
-# Skills
-ln -sf ~/Development/agent-skills/skills/* ~/.claude/skills/
+Run these from your `agent-skills` checkout (macOS/Linux; on Windows use WSL):
 
-# Commands
-ln -sf ~/Development/agent-skills/commands/* ~/.claude/commands/
+```bash
+REPO="$(pwd)"                     # or: REPO=/path/to/your/agent-skills
+mkdir -p ~/.claude/skills ~/.claude/commands
+
+ln -sf "$REPO"/skills/*   ~/.claude/skills/
+ln -sf "$REPO"/commands/* ~/.claude/commands/
 ```
 
 Skills and commands work immediately after symlinking.
@@ -128,8 +147,9 @@ Hooks require **two steps** to activate:
 #### Step 1: Create symlink
 
 ```bash
+REPO="$(pwd)"                     # your agent-skills checkout
 mkdir -p ~/.claude/hooks
-ln -sf ~/Development/agent-skills/hooks/* ~/.claude/hooks/
+ln -sf "$REPO"/hooks/* ~/.claude/hooks/
 ```
 
 #### Step 2: Register in settings.json

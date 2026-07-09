@@ -14,7 +14,8 @@
 #
 # Designed to be self-contained — no jq required (uses python3 from system).
 
-DIAG_LOG="/tmp/code-review-hook-diag.log"
+# Honor TMPDIR rather than hardcoding /tmp.
+DIAG_LOG="${TMPDIR:-/tmp}/code-review-hook-diag.log"
 
 log() { printf '%s [code-review-hook] %s\n' "$(date +%T)" "$1" >> "$DIAG_LOG"; }
 
@@ -64,9 +65,71 @@ if [[ ! -f "$CHECKER" ]]; then
   exit 0
 fi
 
-# Run the marker check
-CHECK_OUT=$(node "$CHECKER" --repo-root "$REPO_ROOT" 2>&1)
+# Run the marker check.
+# --allow-docs-ancestor: accept a code-review marker on a docs-only ancestor of
+# HEAD, so a session-persist docs commit landing after review doesn't block the
+# push. This keeps the push gate consistent with the finishing gate
+# (session-checkpoint.py), which honors the same tolerance. Backward-compatible:
+# the flag only ever ALLOWS more, never blocks more.
+CHECK_OUT=$(node "$CHECKER" --repo-root "$REPO_ROOT" --allow-docs-ancestor 2>&1)
 CHECK_EXIT=$?
+
+# Optional: also require validation evidence at push time. Off by default so
+# existing push-gate users aren't newly blocked; a project opts in by setting
+# CODE_REVIEW_REQUIRE_VALIDATION=1. Skipped if the validation checker is absent.
+if [[ $CHECK_EXIT -eq 0 && "${CODE_REVIEW_REQUIRE_VALIDATION:-0}" == "1" ]]; then
+  VAL_CHECKER="${CODE_REVIEW_VALIDATION_CHECKER:-$HOME/.claude/skills/code-review/scripts/check-validation.cjs}"
+  if [[ -f "$VAL_CHECKER" ]]; then
+    VAL_OUT=$(node "$VAL_CHECKER" --repo-root "$REPO_ROOT" --allow-docs-ancestor 2>&1)
+    VAL_EXIT=$?
+    if [[ $VAL_EXIT -eq 1 ]]; then
+      # Real validation failure (only exit 1 blocks — matches check-marker's
+      # contract). Code review already passed (CHECK_EXIT=0); emit a
+      # validation-specific deny — do NOT fall into the code-review case below,
+      # whose text would wrongly tell the user to run /code-review.
+      log "BLOCK validation exit=$VAL_EXIT $VAL_OUT"
+      VAL_REASON="🚫 Code review passed, but this commit has no validation evidence yet.
+
+$VAL_OUT
+
+The gate requires a validation-passed-<sha> marker recording real, executed
+validation (Playwright / test / e2e). Point 'artifacts' at the files you actually
+produced (any path — a screenshot, a captured log); the recorder copies them into
+this repo's git dir, so your working tree is never touched and nothing becomes
+committable or pushable. Record it after validating:
+
+  node ~/.claude/skills/code-review/scripts/record-validation.cjs <<'JSON'
+  { \"changeClass\": \"backend\",
+    \"checks\": [ { \"kind\": \"test\", \"command\": \"<suite cmd>\",
+                  \"exitCode\": 0, \"artifacts\": [\"<path/to/test.log>\"] } ] }
+  JSON
+
+Full reference: ~/.claude/skills/code-review/SKILL.md → \"Recording validation evidence\"
+
+To bypass this one push (logged): CODE_REVIEW_BYPASS=1 git push"
+      printf '%s' "$VAL_REASON" | python3 -c '
+import json, sys
+reason = sys.stdin.read()
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason
+    }
+}))
+'
+      exit 0
+    elif [[ $VAL_EXIT -ne 0 ]]; then
+      # Exit 2 (infra) or any other unexpected non-zero code — fail OPEN, per the
+      # design's fail-open table (matches the code-review case's *) branch and
+      # session-checkpoint.py run_checker, which treat anything other than 0/1 as
+      # "open"). Only exit 1 blocks.
+      log "VALIDATION infra/unexpected exit=$VAL_EXIT (failing open) $VAL_OUT"
+    fi
+  else
+    log "SKIP:validation_checker_not_found path=$VAL_CHECKER"
+  fi
+fi
 
 case $CHECK_EXIT in
   0)

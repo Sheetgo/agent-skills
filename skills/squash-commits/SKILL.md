@@ -13,6 +13,7 @@ This skill analyzes commits since branch creation, groups them by logical bounda
 
 - **ONLY** when all todos are completed and you're ready to push
 - Manual invocation via `/squash-commits` when explicitly requested by user
+- **Squash BEFORE `/code-review` and validation.** Squashing rewrites commit SHAs, which stales the sha-keyed `code-review-passed-<sha>` / `validation-passed-<sha>` gate markers (see CLAUDE.md → Gate Markers). Squashing after them forces a full re-review + re-validation.
 
 ---
 
