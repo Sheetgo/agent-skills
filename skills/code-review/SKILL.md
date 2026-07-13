@@ -252,6 +252,44 @@ minimum evidence — so it refuses to write a marker that wouldn't pass the gate
 - `other` also accepts `noAutomatableCheck: true` + a non-empty `rationale` for
   genuinely un-automatable changes (logged, not silent).
 
+### Reporting stranded markers (`/gate-gc`)
+
+Every squash, amend and rebase abandons a commit. The marker keyed to that sha is an
+ancestor of nothing, so `pruneStale` can never reach it — and while the marker exists, its
+`validation-evidence/<sha>/` dir is pinned alive too.
+
+```bash
+node ~/.claude/skills/code-review/scripts/gate-gc.cjs      # reports; never deletes
+```
+
+**It reports. It does not delete, and it has no `--force`.** Collecting a marker means
+deciding "this commit is gone" — and git cannot answer that. Under a store fault it reports
+a perfectly LIVE commit exactly as it reports an absent one, through every channel:
+
+| signal | absent | present but faulted |
+|---|---|---|
+| `cat-file -e` | 128 | 128 |
+| `rev-parse --verify -q` | 1, empty stderr | 1, empty stderr *(when packed)* |
+| `for-each-ref --contains` | 129 `no such commit` | 129 `no such commit` |
+| `cat-file --batch-all-objects` | omitted | rc=0, **silently** omitted |
+| `merge-base --is-ancestor` | 1 | 1 *(a corrupt **commit-graph** lies here while every object is pristine)* |
+
+Six deleting designs were written, and adversarial review reproduced a live deletion — of a
+real marker and, through the evidence cascade, the stored validation artifacts — in every
+one: unreadable loose object, unreadable pack, corrupt-but-readable pack, corrupt
+commit-graph, faulted `objects/info/alternates`. Each fix closed one channel and another
+appeared. "Prove this object is gone" is an unbounded verification burden, and what sits on
+the other side of a wrong answer is your validation evidence.
+
+So the tool reports and a human deletes. It refuses to print at all unless the object store
+is provably intact (every pack — **including alternates** — readable and passing `git
+verify-pack`), and every reachability query runs with git's derived caches disabled
+(`core.commitGraph=false core.multiPackIndex=false`) so a corrupt cache cannot lie to it. A
+marker is kept if its commit is reachable from any ref, any worktree HEAD, or the
+**reflog** — a commit one `git reset --hard @{1}` from being HEAD again must not lose its
+evidence. The report is **advisory, not proof**: sanity-check a sha (`git log -1 <sha>`)
+before removing anything.
+
 ## Aggregate verdict
 
 After all surviving claims have a Layer 4 verdict, the skill produces ONE

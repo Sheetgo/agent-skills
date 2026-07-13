@@ -35,12 +35,72 @@ const GIT_TIMEOUT_MS = 5000;
 const HEX_SHA_RE = /^[0-9a-f]{7,64}$/;
 const WORKTREE_HEAD_RE = /^HEAD ([0-9a-f]{40,64})$/;
 
-function git(repoRoot, args) {
+function git(repoRoot, args, timeoutMs = GIT_TIMEOUT_MS) {
   return execFileSync('git', ['-C', repoRoot, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
+}
+
+/**
+ * Git's DERIVED CACHES — the commit-graph (`objects/info/commit-graph`) and the
+ * multi-pack-index (`objects/pack/*.midx`) — answer reachability questions without
+ * walking the real objects. They are written by `git gc` in essentially every repo
+ * (`gc.writeCommitGraph` defaults to true), and a single corrupt byte in one makes
+ * `for-each-ref --contains` and `merge-base --is-ancestor` report a commit that IS
+ * on master as unreachable — while every object and permission is perfectly intact,
+ * so no integrity check on the object store can see it.
+ *
+ * Trying to VALIDATE each cache is a losing game (commit-graph, then midx, then the
+ * next one). Instead, do not consult them: every query whose answer could get a
+ * marker DELETED runs with the caches off, so it walks real objects. Slower, and
+ * irrelevant — only the human-invoked gate-gc pays for it.
+ */
+const NO_DERIVED_CACHES = ['-c', 'core.commitGraph=false', '-c', 'core.multiPackIndex=false'];
+
+function gitRaw(repoRoot, args, timeoutMs = GIT_TIMEOUT_MS) {
+  return git(repoRoot, [...NO_DERIVED_CACHES, ...args], timeoutMs);
+}
+
+// Trimmed stdout, or null on any failure. Caches OFF.
+function gitRawTry(repoRoot, args) {
+  try {
+    return gitRaw(repoRoot, args).trim();
+  } catch (_e) {
+    return null;
+  }
+}
+
+// True iff the command exits 0. Caches OFF.
+function gitRawOk(repoRoot, args) {
+  try {
+    gitRaw(repoRoot, args);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// `git verify-pack` reads the whole pack, so it needs far more than the default
+// budget. Only the human-invoked gate-gc pays this; nothing on the push path does.
+const PACK_VERIFY_TIMEOUT_MS = 120000;
+
+// { ok } | { ok:false, reason } — distinguishes a CORRUPT pack from one we simply
+// could not finish checking. Both refuse the sweep, but the human is told which.
+function verifyPack(repoRoot, packPath) {
+  try {
+    execFileSync('git', ['-C', repoRoot, 'verify-pack', packPath], {
+      stdio: 'ignore',
+      timeout: PACK_VERIFY_TIMEOUT_MS,
+    });
+    return { ok: true };
+  } catch (e) {
+    if (e.killed || e.code === 'ETIMEDOUT' || e.signal) {
+      return { ok: false, reason: 'could not be verified in time' };
+    }
+    return { ok: false, reason: 'is corrupt (failed git verify-pack)' };
+  }
 }
 
 // Returns trimmed stdout or null on any failure (never throws).
@@ -190,6 +250,214 @@ function pruneStale(repoRoot, gitDirAbs, prefix, keepSha) {
     /* best-effort */
   }
 }
+
+/**
+ * Does this commit still exist in the object DB? Returns true / false / null,
+ * where null = "git could not tell us".
+ *
+ * This distinction is load-bearing and easy to get catastrophically wrong.
+ * `gitOk()` collapses "the object is gone" and "git failed" into the same `false`,
+ * and pruning on a git error DELETES A LIVE MARKER — and, downstream, the stored
+ * validation evidence it points at.
+ *
+ * Exit codes alone cannot separate the two cases (empirically, git 2.52):
+ *   absent object     -> `cat-file -e` 128 | `rev-parse --verify -q` 1, stderr EMPTY
+ *   unreadable object -> `cat-file -e` 128 | `rev-parse --verify -q` 1, stderr "error: ..."
+ * Only `rev-parse --verify --quiet` discriminates, via an empty stderr. A
+ * permissions fault, an I/O error, a concurrent `git gc`, or a timeout must all
+ * come back as null (keep), never as "gone" (prune).
+ */
+function commitExists(repoRoot, sha) {
+  try {
+    // Caches OFF: a corrupt commit-graph can make a live commit look absent.
+    execFileSync('git', ['-C', repoRoot, ...NO_DERIVED_CACHES, 'rev-parse', '--verify', '--quiet', `${sha}^{commit}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: GIT_TIMEOUT_MS,
+    });
+    return true;
+  } catch (e) {
+    // --quiet suppresses output for a genuinely-absent object; anything on stderr
+    // means git hit a real problem and we must not conclude "gone".
+    if (e.status === 1 && !String(e.stderr || '').trim()) return false;
+    return null;
+  }
+}
+
+/**
+ * POSITIVE CONTROL — can this repo read its object store at all?
+ *
+ * `commitExists` alone is NOT enough to trust an "absent" verdict. For LOOSE objects,
+ * unreadable-vs-absent is distinguishable by stderr. For PACKED objects it is NOT:
+ * an unreadable pack makes `rev-parse --verify --quiet` exit 1 with EMPTY stderr —
+ * byte-for-byte the same answer as a genuinely-absent object. And after any `git gc`
+ * (which git runs on its own via gc.auto) essentially all history lives in packs.
+ *
+ * So before believing any object is "gone", read a commit we KNOW exists: HEAD. If
+ * even THAT cannot be read, the store is faulted (unreadable pack, permission fault,
+ * concurrent gc, I/O error) and every "absent"/"unreachable" answer is worthless —
+ * we must sweep nothing. An unborn HEAD also lands here, which is fine: a repo with
+ * no commits has no markers worth collecting.
+ */
+function objectStoreReadable(repoRoot) {
+  return commitExists(repoRoot, 'HEAD') === true;
+}
+
+/**
+ * Preflight for the ONLY operation that acts on an "this object is gone" verdict —
+ * the human-invoked gate-gc sweep. Returns { ok, problems: [] }.
+ *
+ * Why a filesystem check and not a git one: git cannot be asked "is this object
+ * absent, or merely unreadable?". Under a fault it answers IDENTICALLY for both,
+ * at every level we probed (git 2.52):
+ *
+ *   absent               | unreadable
+ *   ---------------------|------------------------------------------
+ *   cat-file -e     128  | 128
+ *   rev-parse -q    1    | 1  (+ EMPTY stderr too, for PACKED objects)
+ *   for-each-ref    129  | 129, "error: no such commit <sha>"
+ *   batch-all-objects    | rc=0, silently omits the object
+ *
+ * So "gone" can never be inferred from a git failure. Instead, prove the store is
+ * intact FIRST, and refuse to sweep at all if it isn't.
+ *
+ * READABILITY IS NOT ENOUGH. A pack can keep perfectly good permissions and still be
+ * CORRUPT — bit rot, a truncated write, a killed `git gc`, a bad copy. A single
+ * flipped byte inside a pack makes git report the live, tag-reachable commits it
+ * holds as absent, with the same empty-stderr exit 1 as a deleted object, while
+ * `access(R_OK)` happily succeeds. So we run git's own integrity check
+ * (`verify-pack`) over every pack. That is expensive — which is precisely why this
+ * whole operation is a human-invoked maintenance command and not something on the
+ * push path.
+ */
+function objectStoreIntact(repoRoot, gitDirAbs) {
+  const problems = [];
+
+  // Objects can live in ALTERNATE stores (`git clone --reference`, shared CI caches,
+  // submodule object sharing). A faulted alternate makes commits that live only there
+  // look absent, and no amount of checking THIS repo's packs can see it — so check
+  // every store, not just ours. Alternates may chain, so walk them transitively.
+  const stores = [];
+  const seen = new Set();
+  const queue = [path.join(gitDirAbs, 'objects')];
+  while (queue.length) {
+    const dir = path.resolve(queue.shift());
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    stores.push(dir);
+    const altFile = path.join(dir, 'info', 'alternates');
+    let raw = null;
+    try {
+      raw = fs.readFileSync(altFile, 'utf8');
+    } catch (e) {
+      if (e.code !== 'ENOENT') problems.push(`unreadable alternates file: ${altFile}`);
+      continue;
+    }
+    for (const line of raw.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      if (line.startsWith('#')) continue;
+      queue.push(path.isAbsolute(line) ? line : path.resolve(dir, line));
+    }
+  }
+
+  for (const objects of stores) {
+    const label = objects === path.join(gitDirAbs, 'objects') ? 'objects' : objects;
+    try {
+      fs.accessSync(objects, fs.constants.R_OK | fs.constants.X_OK);
+    } catch (_e) {
+      problems.push(`object store is not readable: ${objects}`);
+      continue;
+    }
+    const packDir = path.join(objects, 'pack');
+    let entries = [];
+    try {
+      entries = fs.readdirSync(packDir);
+    } catch (e) {
+      if (e.code !== 'ENOENT') problems.push(`pack directory is not readable: ${packDir}`);
+      continue;
+    }
+    for (const f of entries) {
+      if (!/\.(pack|idx)$/.test(f)) continue;
+      const p = path.join(packDir, f);
+      // (a) permissions — an unreadable pack makes git say "no such commit" for live commits
+      try {
+        fs.accessSync(p, fs.constants.R_OK);
+      } catch (_e) {
+        problems.push(`unreadable pack file: ${label}/pack/${f}`);
+        continue;
+      }
+      // (b) integrity — a READABLE but corrupt pack produces the same lie, silently
+      if (f.endsWith('.pack')) {
+        const v = verifyPack(repoRoot, p);
+        if (!v.ok) problems.push(`${label}/pack/${f} ${v.reason}`);
+      }
+    }
+  }
+
+  if (!objectStoreReadable(repoRoot)) {
+    problems.push("cannot read HEAD's own commit — the object store is not answering");
+  }
+  return { ok: problems.length === 0, problems };
+}
+
+// The things a commit can still be reached from, plus the positive control. Built
+// ONCE per sweep (4 git calls), not per marker. `reflog` is null if it could not be
+// enumerated -> unknown.
+function reachabilityRoots(repoRoot) {
+  const reflogOut = gitRawTry(repoRoot, ['reflog', 'show', '--all', '--format=%H']);
+  return {
+    heads: worktreeHeads(repoRoot),
+    reflog: reflogOut === null ? null : new Set(reflogOut.split('\n').filter(Boolean)),
+    storeReadable: objectStoreReadable(repoRoot),
+  };
+}
+
+/**
+ * Is `sha` still reachable from anything that matters? true / false / null.
+ *
+ * "Reachable" deliberately includes the REFLOG. A marker lives exactly as long as
+ * its commit is recoverable: `git reset --hard` and `/undo-squash` are ordinary
+ * undo workflows, and a commit one `git reset --hard @{1}` away from being HEAD
+ * again must not have its marker (and its evidence) destroyed underneath it. The
+ * leak this closes therefore becomes *bounded by git's own gc schedule* rather
+ * than eliminated instantly: once the reflog entry expires
+ * (`gc.reflogExpireUnreachable`, 30d default) or the object is gc'd, the marker is
+ * collected. That is the correct trade — a missed prune costs a few KB; a false
+ * prune costs re-running the actual validation.
+ */
+function isShaReachable(repoRoot, sha, roots) {
+  const r = roots || reachabilityRoots(repoRoot);
+
+  // Set membership first — no subprocess. This is the common case by far: a marker
+  // is written for a commit that was HEAD, so it is a reflog entry. It keeps the
+  // per-invocation cost of the sweep at ~0 for every marker that is obviously live,
+  // which matters because this runs on every push and every finish attempt.
+  if (r.reflog && r.reflog.has(sha)) return true;
+  if (r.heads.has(sha)) return true;
+
+  const exists = commitExists(repoRoot, sha);
+  if (exists === null) return null; // git errored -> unknown -> keep
+  if (exists === false) {
+    // "Absent" is only believable if the store demonstrably reads. An unreadable
+    // PACK produces this exact answer for commits that are perfectly fine.
+    return r.storeReadable ? false : null;
+  }
+
+  // `--contains` covers every ref: branches, tags, remotes, stash, notes. Caches OFF —
+  // this answer can get a marker deleted, so it must walk real objects.
+  const refs = gitRawTry(repoRoot, ['for-each-ref', '--contains', sha, '--count=1', '--format=%(refname)']);
+  if (refs === null) return null; // git error -> unknown -> keep
+  if (refs !== '') return true;
+
+  if (r.reflog === null) return null; // couldn't enumerate the reflog -> unknown -> keep
+  if (!r.storeReadable) return null; // faulted store -> no negative answer is trustworthy
+
+  // An ANCESTOR of a detached worktree HEAD (which is not a ref) is still needed.
+  for (const h of r.heads) {
+    if (gitRawOk(repoRoot, ['merge-base', '--is-ancestor', sha, h])) return true;
+  }
+  return false;
+}
+
 
 // Resolve the branch's base commit for three-dot diffs. Returns sha or null.
 function resolveBase(repoRoot) {
@@ -433,6 +701,10 @@ module.exports = {
   isDocsOnly,
   findValidMarker,
   pruneStale,
+  isShaReachable,
+  commitExists,
+  objectStoreIntact,
+  reachabilityRoots,
   worktreeHeads,
   evidenceDir,
   shasWithMarkers,
