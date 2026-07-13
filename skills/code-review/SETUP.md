@@ -4,18 +4,21 @@ End-to-end setup. Two layers: user-level (the skill itself) and per-project (the
 
 ## 1. User-level install (required)
 
-Symlink the skill into Claude Code's user-level skills directory:
+Symlink the skill into Claude Code's user-level skills directory. Run this from
+your `agent-skills` checkout (works on macOS and Linux; on Windows use WSL):
 
 ```bash
-ln -s ~/Development/Sheetgo/agent-skills/skills/code-review ~/.claude/skills/code-review
-ln -s ~/Development/Sheetgo/agent-skills/commands/code-review.md ~/.claude/commands/code-review.md
+REPO="$(pwd)"                      # or: REPO=/path/to/your/agent-skills
+mkdir -p ~/.claude/skills ~/.claude/commands
+ln -s "$REPO/skills/code-review"      ~/.claude/skills/code-review
+ln -s "$REPO/commands/code-review.md" ~/.claude/commands/code-review.md
 ```
 
-Adjust the source path if your `agent-skills` checkout lives elsewhere. After this, a fresh Claude Code session has access to:
+After this, a fresh Claude Code session has access to:
 
 - The `code-review` skill (invoked automatically when the YAML description triggers fire, or manually with `/code-review`)
 - All four subagent prompts at `~/.claude/skills/code-review/prompts/`
-- Four helper scripts at `~/.claude/skills/code-review/scripts/` (`run-codex.sh`, `parse-claims.cjs`, `detect-security-relevant.sh`, `check-marker.cjs`)
+- Seven helper scripts at `~/.claude/skills/code-review/scripts/` (`run-codex.sh`, `parse-claims.cjs`, `detect-security-relevant.sh`, `check-marker.cjs`, plus the gate library `gate-lib.cjs` and the validation-evidence pair `record-validation.cjs` / `check-validation.cjs`, which the finishing gate in `hooks/session-checkpoint.py` also consumes)
 - The worked example at `~/.claude/skills/code-review/examples/full-flow.md`
 
 ### Prerequisites for full functionality
@@ -23,8 +26,12 @@ Adjust the source path if your `agent-skills` checkout lives elsewhere. After th
 | Prerequisite | Why | Where to get it |
 |---|---|---|
 | OpenAI Codex CLI (any OS), authenticated | Layer 1 (a) parallel reviewer | See "Installing the Codex CLI" below |
-| `gh` CLI (GitHub CLI) authenticated to the relevant org | Layer 1 base detection (PR base lookup) and DEFER + DOCUMENT thread queries | `brew install gh && gh auth login` |
-| Node.js (any version with `fs` + `child_process`) | `parse-claims.cjs` and `check-marker.cjs` | Already required by most projects |
+| `gh` CLI (GitHub CLI) authenticated to the relevant org | Layer 1 base detection (PR base lookup) and DEFER + DOCUMENT thread queries | macOS `brew install gh` · Debian/Ubuntu `sudo apt install gh` · Fedora/RHEL `sudo dnf install gh` · Windows `winget install GitHub.cli` — then `gh auth login` |
+| Node.js **≥ 16** (runtime) | The checker/recorder scripts (`parse-claims.cjs`, `check-marker.cjs`, `gate-lib.cjs`, `check-validation.cjs`, `record-validation.cjs`) — need only `fs` / `path` / `child_process` | Already required by most projects |
+| Node.js **≥ 18** (contributors only) | The test suite uses the built-in `node:test` runner (`node --test`), which doesn't exist before Node 18. Not needed to *use* the skill — only to run its tests. | nvm / nodesource / `brew install node` |
+| Git **≥ 2.22** (runtime), **≥ 2.31** recommended | `git branch --show-current` needs 2.22. `git worktree list --porcelain`'s `prunable` annotation needs 2.31 — on older git, marker pruning simply over-retains markers for deleted worktrees (fail-safe: no wrong allow/deny, just `.git` clutter). | System package manager |
+
+> **OS note:** everything here targets macOS and Linux (and Windows via **WSL**). The hooks are POSIX shell + Python and write their diagnostic logs to `$TMPDIR` (falling back to `/tmp`). Native (non-WSL) Windows is not a supported target — the shell hooks and the symlink-based install both assume a POSIX environment.
 
 If the Codex CLI is unavailable, the skill falls back to reviewer-only Layer 1 (single-signal) — Layer 1(b), the `code-reviewer` subagent, still runs, so the pipeline works without Codex (just no cross-validation). If `gh` is unavailable or unauthenticated, the diff base falls back to the remote's default branch (`origin/main`/`origin/master`) and PR-context drafts are skipped.
 
@@ -113,7 +120,7 @@ The hook is gating, not enforcing. Two documented bypasses:
 - `[skip-review]` in the latest commit message body
 - `CODE_REVIEW_BYPASS=1 git push`
 
-Both bypasses log to `/tmp/code-review-hook-diag.log` for auditing.
+Both bypasses log to `$TMPDIR/code-review-hook-diag.log` for auditing.
 
 ## Uninstall
 
@@ -139,5 +146,5 @@ See `~/.claude/skills/code-review/project-setup/README.md` for hook-specific iss
 ## Next steps after install
 
 - Run the skill on a real branch to validate the full pipeline (the GREEN baselines in `baseline-tests/results/` are simulated; the first cleanroom run is the real test).
-- If anything in the flow breaks, file findings against the agent-skills repo with the relevant `/tmp/code-review-hook-diag.log` excerpt and the SKILL.md section that misled.
+- If anything in the flow breaks, file findings against the agent-skills repo with the relevant `$TMPDIR/code-review-hook-diag.log` excerpt and the SKILL.md section that misled.
 - For ongoing tuning: the rationalization patterns the skill counters live in `~/.claude/skills/code-review/baseline-tests/rationalization-patterns.md` — new themes observed in the wild can be added there + cross-referenced into the SKILL.md red-flags table.

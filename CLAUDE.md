@@ -31,7 +31,7 @@ docs/plans/                         # Design documents (YYYY-MM-DD-{name}-design
 
 - **Skills** (`SKILL.md`): Full behavioral specifications with YAML frontmatter (`name`, `description`). They define *how* Claude should behave — wizard flows, safety checks, verification steps. Skills are the source of truth.
 - **Commands** (`.md`): Thin stubs that point to a skill and say "follow it exactly." They exist only to provide `/command-name` invocation. Never duplicate skill logic in commands. Commands can also alias external plugin skills (e.g., `commit.md` aliases `commit-commands:commit` to provide `/commit`).
-- **Hooks** (`.py`): Python scripts that run as `PreToolUse` handlers on `Bash` tool calls. They read tool input JSON from stdin and either `sys.exit(0)` (allow), `sys.exit(2)` (block), or print a JSON `permissionDecision` object to deny with a reason.
+- **Hooks** (`.py`): Python scripts that run as `PreToolUse` handlers on `Bash` **or `Skill`** tool calls (see Hook Protocol below for the two matcher variants). They read tool input JSON from stdin and either `sys.exit(0)` (allow), `sys.exit(2)` (block), or print a JSON `permissionDecision` object to deny with a reason.
 
 ### Subagent Dispatch Terminology
 
@@ -39,7 +39,7 @@ Skills dispatch subagents with the **Agent tool** (using `subagent_type`, e.g. `
 
 ### Hook Protocol
 
-Hooks receive JSON on stdin with `tool_name` and `tool_input.command`. To block a command, exit with code 2 and print to stderr. To deny with feedback (so the agent can self-correct), print a JSON object with `hookSpecificOutput.permissionDecision: "deny"` and exit 0. See `git-conventions.py` for the deny-with-feedback pattern.
+Hooks receive JSON on stdin with `tool_name` and `tool_input`. For **Bash**-matcher hooks the relevant field is `tool_input.command`; for **Skill**-matcher hooks it is `tool_input.skill` (the skill name being invoked). To block a command, exit with code 2 and print to stderr. To deny with feedback (so the agent can self-correct), print a JSON object with `hookSpecificOutput.permissionDecision: "deny"` and exit 0. See `git-conventions.py` (Bash matcher) and `session-checkpoint.py` (Skill matcher) for the deny-with-feedback pattern.
 
 ### Smart Compose Hook
 
@@ -62,7 +62,35 @@ The `smart-compose` hook (`hooks/smart-compose.py`) auto-approves composed Bash 
 
 ### Session State
 
-Squash operations store state in `.claude/sessions/{sanitized-branch}/` (branch name with `/` percent-encoded as `%2F` — e.g. `feat/x` → `feat%2Fx` — so it can't collide with a literal `feat-x`). Files: `last-squash.json`, `squash-in-progress.json`, `pre-squash.bundle`. This directory is gitignored.
+Squash operations store state in `.claude/sessions/{sanitized-branch}/` (branch name with `/` percent-encoded as `%2F` — e.g. `feat/x` → `feat%2Fx` — so it can't collide with a literal `feat-x`). Files: `last-squash.json`, `squash-in-progress.json`, `pre-squash.bundle`, and the `session-persist-done` finishing-gate marker. This directory is gitignored. Any new per-branch file **must** use the same `%2F` encoding.
+
+### Gate Markers
+
+Two sha-keyed markers live in the **git common-dir** (`git rev-parse --git-common-dir`, so they're shared across linked worktrees), written on a passing verdict and consumed by the finishing gate (`session-checkpoint.py`) and the push gate (`git-push-gate-hook.sh`):
+
+- `code-review-passed-<sha>` — written by `/code-review` on a PUSH READY verdict.
+- `validation-passed-<sha>` — JSON evidence marker written by `record-validation.cjs` (change class + executed checks + stored artifacts). The recorder **copies** artifacts into `<git-common-dir>/validation-evidence/<sha>/` — the working tree is never touched, so evidence can't be committed or pushed in *any* repo, and no per-repo `.gitignore` is needed.
+
+Both gates share one checker library (`skills/code-review/scripts/gate-lib.cjs`). A marker is valid for HEAD, or — with `--allow-docs-ancestor` — for a **proven docs-only ancestor** of HEAD (so a `/session-persist` docs commit landing after review/validation doesn't stale them). Because these are sha-keyed, **run `/squash-commits` BEFORE `/code-review` and validation** — squashing rewrites SHAs and re-arms both gates.
+
+### Finishing Gate
+
+`session-checkpoint.py` (Skill-matcher `PreToolUse` hook) blocks `finishing-a-development-branch` until three gates pass for HEAD: **documentation** (`session-persist-done`), **code review** (`code-review-passed-<sha>`), and **validation** (`validation-passed-<sha>`).
+
+**Golden order:** `/squash-commits` → `/code-review` → validate (`record-validation.cjs`) → `/session-persist` → finish. Squash first (it rewrites SHAs and re-arms gates 2 & 3); the docs commit lands last and is tolerated by the docs-only-ancestor rule.
+
+**Validation evidence** is recorded with `record-validation.cjs` (stdin JSON: `changeClass` = `ui|backend|fullstack|other`, `checks[]` with `kind`/`command`/`exitCode`/`artifacts`). Point `artifacts` at the real files your tooling produced (any path); the recorder copies them into the git dir. The working tree stays pristine — evidence is never committed or pushed. See `skills/code-review/SKILL.md` → "Recording validation evidence".
+
+It fails open for gates 2 & 3 when the code-review skill's Node checkers aren't installed, and skips them for docs-only branches. Bypass: `SKIP_FINISH_GATES=1` (one invocation, checked before any git call so it works even if git is wedged; logged to `$TMPDIR/finish-gate-diag.log`). Design: `docs/plans/2026-07-08-finishing-gate-validation-design.md`.
+
+Verify the gate is actually enforcing (not silently failing open):
+
+```bash
+echo '{"tool_name":"Skill","tool_input":{"skill":"finishing-a-development-branch"},"cwd":"'"$(pwd)"'"}' \
+  | python3 ~/.claude/hooks/session-checkpoint.py
+```
+
+Empty output = gates pass (allow). A `permissionDecision: "deny"` JSON = it's gating, with the reason.
 
 ### Wizard UX Convention
 

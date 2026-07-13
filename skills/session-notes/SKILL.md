@@ -15,7 +15,7 @@ This skill captures session context — discoveries, decisions, deferred work, a
 - Before creating a PR, to document what was learned
 - When switching context to a different branch
 - When session has produced meaningful discoveries, decisions, or deferred work
-- Automatically triggered by session-checkpoint hook before finishing a branch
+- Automatically triggered by the session-checkpoint hook before finishing a branch (this is gate 1 of three — the hook also requires `/code-review` and real validation; see CLAUDE.md → Finishing Gate)
 
 **When NOT to use:** Quick one-off tasks with no plan file, trivial changes that produced no decisions or discoveries.
 

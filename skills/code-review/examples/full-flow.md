@@ -209,6 +209,11 @@ After the omnibus fix lands:
 The skill writes the marker file `.git/code-review-passed-<sha>` for the
 hook to consume.
 
+> Note: PUSH READY clears the code-review gate only. The finishing gate
+> (`hooks/session-checkpoint.py`) additionally requires executed validation
+> evidence — record it with `record-validation.cjs` after the Layer-4 live
+> test (see the "Recording validation evidence" note in `../SKILL.md`).
+
 ## Outcome
 
 This is exactly what happened in the v2.6.19c-2 → v2.6.19d cycle. The

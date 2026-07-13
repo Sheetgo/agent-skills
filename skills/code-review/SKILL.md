@@ -210,6 +210,48 @@ issue exists (or doesn't) in actual runtime, not just in code reading.
 - **NOT_REPRODUCIBLE** — live test fails to surface the bug. Either the claim is wrong, or the test doesn't cover the trigger condition. Record both possibilities. Main thread decides defer or investigate further.
 - **OUT_OF_SCOPE** — test method genuinely can't run (needs production data, external service mocking we don't have). Document and treat as needing manual review.
 
+### Recording validation evidence (for the finishing gate)
+
+The finishing gate (`hooks/session-checkpoint.py`) requires a
+`validation-passed-<sha>` marker separate from the code-review marker — because
+the BOTH-CLEAN short-circuit skips Layer 4, a PUSH READY alone does **not** prove
+the change was exercised. When you run a Layer-4 live test (or the change's real
+validation more broadly), stamp the evidence so finishing is unblocked.
+
+Point the recorder at the artifacts you actually produced — a Playwright
+screenshot, a captured test log — **wherever your tooling wrote them** (relative
+to the repo root, or absolute):
+
+```bash
+npm run test:e2e -- login.spec.ts | tee /tmp/e2e.log     # produce evidence
+node ~/.claude/skills/code-review/scripts/record-validation.cjs <<'JSON'
+{ "changeClass": "ui",
+  "checks": [ { "kind": "playwright", "command": "npm run test:e2e -- login.spec.ts",
+               "exitCode": 0, "artifacts": ["test-results/login.png", "/tmp/e2e.log"] } ] }
+JSON
+```
+
+**Where the evidence goes.** The recorder **copies** each artifact into the
+repo's git dir — `<git-common-dir>/validation-evidence/<sha>/` — and records the
+stored names. **Your working tree is never touched.** That's deliberate: this
+gate is installed globally and runs against every repo you work in, so evidence
+must never be `git add`-able, committable, or pushable in any of them — and no
+per-repo `.gitignore` entry is required. (It's also shared across linked
+worktrees, since the common-dir is.) Stored evidence is pruned automatically when
+its marker goes stale.
+
+The recorder validates with the **same `gate-lib.cjs` rules the checker
+enforces** — a source artifact that's missing, empty, or not a regular file is
+rejected, exit codes must be `0`, and the declared `changeClass` must have its
+minimum evidence — so it refuses to write a marker that wouldn't pass the gate.
+
+- `changeClass`: `ui` | `backend` | `fullstack` | `other`
+  (`other` = config/infra/tooling — there is no `config` value)
+- `kind`: `playwright` | `screenshot` | `e2e` | `test` | `unit` | `integration` |
+  `clasp` | `smoke` | `build` | `lint`
+- `other` also accepts `noAutomatableCheck: true` + a non-empty `rationale` for
+  genuinely un-automatable changes (logged, not silent).
+
 ## Aggregate verdict
 
 After all surviving claims have a Layer 4 verdict, the skill produces ONE
