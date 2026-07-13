@@ -414,6 +414,29 @@ validation check; absent validation checker → skipped.
   users; the finishing gate is the primary enforcement point.
 - **Provenance:** two branches sharing an ancestor sha can share a Gate-2/3
   marker once a docs commit lands. Content-identical, so byte-safe; documented.
+- **Markers for UNREACHABLE shas are never collected** (found while cleaning up
+  after the PR-#5 merge, 2026-07-13). `pruneStale` only deletes a marker whose sha
+  is an **ancestor of the kept sha** — deliberately, so a divergent branch's marker
+  survives. But a sha abandoned by history rewriting (squash, amend, rebase) is an
+  ancestor of *nothing*, so it is never pruned, and `pruneEvidence` keeps any
+  evidence dir whose marker still exists — so the orphan marker **pins its evidence
+  alive too**. Every squash/amend/rebase cycle leaves one behind: this branch alone
+  accumulated **21 orphan markers and 4 evidence dirs (~72K)** across its rewrites,
+  all of which had to be swept by hand.
+
+  Bounded, `.git`-local, never committable, and it cannot cause a false ALLOW (an
+  unreachable marker can never match HEAD) — so it is hygiene, not correctness. But
+  it grows without limit in long-lived repos, and it is exactly the "silent
+  accumulation in the git dir" class the evidence-store refactor set out to kill.
+
+  **Fix sketch:** sweep markers whose sha is unreachable from *every* ref and every
+  live worktree HEAD — e.g. `git merge-base --is-ancestor <sha> <ref>` across
+  `git for-each-ref --format='%(objectname)'` plus `worktreeHeads()`, or more
+  cheaply `git cat-file -e <sha>` combined with a reachability check (note a
+  rewritten commit often still *exists* as a dangling object until gc, so existence
+  alone is not reachability). Must keep failing safe: if reachability can't be
+  determined, keep the marker. Then call `pruneEvidence` with the surviving set, as
+  the checker and recorder already do.
 - **Artifacts under `docs/`** deleted by a later docs-only cleanup fail Gate 3
   closed (safe direction) — a UX sharp edge, not a hole.
 - **Node dependency** for Gates 2/3 — fails open with a note when absent, so
