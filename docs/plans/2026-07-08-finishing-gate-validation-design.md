@@ -584,6 +584,9 @@ attestation path, crashed-run self-healing, shellcheck).
 
 ### Open / next
 
+> **Superseded by the 2026-07-13 log below.** Items 1–2 are done (the dogfood ran,
+> and it found three real bugs before the PR was opened). Items 3–4 still stand.
+
 1. **Dogfood the current local build first** — the evidence-store refactor is
    new; exercise the real flow end-to-end (`/code-review` → validate →
    `/session-persist` → finish) to confirm it functions before opening the PR.
@@ -592,3 +595,181 @@ attestation path, crashed-run self-healing, shellcheck).
    uncommitted** change (adds an SG-13996 comment). It has been deliberately kept
    out of every commit — decide separately whether to keep, commit, or discard.
 4. Codex CLI has a usage cap the user guards — **ask before invoking it**.
+
+## Session Log — Dogfood: the gate caught three bugs in itself (2026-07-13)
+
+The plan was "dogfood the build, then push." The dogfood ran the real flow against
+the **globally-symlinked local build** (`~/.claude/skills/code-review` and
+`~/.claude/hooks/session-checkpoint.py` both resolve into this working tree, so the
+gate under test *is* the gate that runs). It did not come back clean: `/code-review`
+returned **FIX FIRST** and surfaced **three real bugs in the gate's own code** —
+on the exact commit whose previous review round had come back Codex-clean and
+reviewer-`NO_FINDINGS`. The commit was amended (`a43b763` → `b1028be`); nothing was
+ever pushed.
+
+### What the dogfood proved (before it found anything)
+
+- With all three markers cleared, the hook **DENIED** with `3 of 3 gates not
+  satisfied` and the full self-sufficient remediation text. The gate blocks.
+- After review + validation, it denied with **`1 of 3`** (documentation only) —
+  it discriminates per-gate rather than blanket-blocking.
+- **The working tree stayed pristine throughout.** `git status` never showed
+  anything but the unrelated `parse-claims.cjs` edit. Evidence artifacts were
+  deliberately captured *outside the repo* (in a scratch dir) and the recorder
+  copied them into `.git/validation-evidence/<sha>/`. The evidence-store refactor's
+  central promise holds under a real run.
+
+### The three bugs
+
+**1. A marker and its evidence could drift apart (P2 — reproduced live).**
+`check-validation.cjs` called `pruneStale()` but never `pruneEvidence()`, so
+pruning a superseded marker **orphaned its `validation-evidence/<sha>/` directory
+in the git common-dir**. The root cause was structural, not an oversight in
+passing: `shasWithMarkers()` was a *private local function inside*
+`record-validation.cjs`, never exported — so the checker **could not** have called
+it. Only the recorder ever pruned evidence, and the checker runs far more often
+(every finish attempt, every push).
+
+Reachable via a first-class workflow, and reproduced end-to-end in a throwaway
+repo: record at sha A → a linked worktree pinned at A protects marker A from the
+recorder's prune → record at B → remove the worktree → the next gate check prunes
+marker A and **leaves its evidence behind**. This directly falsified the invariant
+this repo had already written down at `SKILL.md:240` — *"Stored evidence is pruned
+automatically when its marker goes stale."* The orphan is only reclaimed by some
+*later* `record-validation` run, which may never come.
+
+**Fix:** `shasWithMarkers(gitDirAbs, prefix)` is now a shared `gate-lib` export
+used by **both** callers, so the pair can't drift again; `check-validation.cjs`
+calls `pruneEvidence` after `pruneStale`. `pruneEvidence` also now **no-ops on an
+indeterminate keep-set** (`null`) instead of treating it as "keep nothing" — the
+old private helper fell back to `[headSha]` on a readdir error, which would have
+deleted every *other* live evidence dir on a transient failure. The fix is strictly
+safer than the code it replaced.
+
+**2. SHA-256 repos silently lost the tolerance (P3).** The object-id regexes were
+bounded at SHA-1's 40 hex chars (`/^[0-9a-f]{7,40}$/`, `/^HEAD ([0-9a-f]{40})$/`).
+In a `--object-format=sha256` repo every id is 64 chars, so **every marker filename
+would be skipped as junk** — silently disabling the docs-only-ancestor tolerance
+*and* all marker pruning, and returning an empty set from `worktreeHeads()` (killing
+cross-worktree marker protection). No error, no log line; the gate just quietly
+stopped tolerating. Fails closed, never false-allow — which is why it's P3 and not
+worse. Fixed by hoisting `HEX_SHA_RE = /^[0-9a-f]{7,64}$/` and
+`WORKTREE_HEAD_RE = /^HEAD ([0-9a-f]{40,64})$/` to shared constants. The exact-HEAD
+lookup was always safe (a direct `fs.existsSync`, no regex).
+
+**3. A crash window between the evidence swap and the marker write (P3).**
+`record-validation.cjs` committed the evidence dir — deleting its backup — *before*
+writing the marker. A failed marker write (ENOSPC/EACCES/kill) therefore left
+**evidence with no marker pointing at it**. Fixed by retaining the backup until the
+marker is durably written, with a `restoreEvidence()` helper that unwinds the swap
+on marker-write failure.
+
+### Regression tests (25 JS + 13 Python, all green)
+
+Three new tests, each **verified to fail against the pre-fix build and pass after**
+— the check that separates a regression test from decoration:
+
+- `check-validation.cjs: pruning a stale marker also drops its evidence` — replays
+  the worktree-protection scenario above.
+- `record-validation.cjs: a failed marker write rolls the evidence swap back` —
+  `chmod 0444` on the marker forces the write to fail *after* the swap; asserts the
+  **original** evidence is restored, no `.staging-*`/`.old-*` strays, gate still passes.
+- `gate-lib: markers, tolerance and pruning work in a SHA-256 repo` — builds a real
+  `--object-format=sha256` repo (git 2.52 supports it; skips if unavailable).
+
+A confirm-pass re-review of the fixes returned **NO_FINDINGS**.
+
+### Lesson worth keeping
+
+The previous round's "Codex clean + reviewer NO_FINDINGS" was **not** evidence of
+correctness — the same diff, reviewed again, yielded a reproduced P2. A single clean
+review pass is one sample, not a proof. This is the skill's own "AI reviewers are
+lazy and short-sighted" premise landing on the skill itself, and it's the argument
+for the Layer-3 panel + Layer-4 live test rather than trusting a Layer-1 all-clear.
+
+Second, smaller lesson: the bug existed because a helper was **private to one of two
+callers that both needed it**. Where an invariant must hold at every call site, the
+enforcement belongs in the shared library — otherwise "call these two together" is a
+convention, and conventions drift.
+
+### Where it stands
+
+- **One clean commit** (`b1028be`), 1 ahead of `origin/master`, never pushed. The
+  commit body's stale *"artifacts must be committed … under `docs/validation/`"*
+  sentence — a leftover contradicting the evidence-store refactor described lower in
+  the same message — was corrected in the amend.
+- **25 JS + 13 Python** green. Gates 2 & 3 **PASS** for `b1028be`.
+- Codex CLI was **deliberately skipped** this round (the user declined; usage cap).
+  Layer 1 ran reviewer-only — single-signal, no cross-validation.
+
+### Wrap-up — PR #5, rebase, and the SG-13996 fold-in (2026-07-13)
+
+**PR #5** is open against `master`. GitHub reported it out-of-date (master requires
+`strict: true` — branches must be current at merge time). `origin/master` was one
+merge commit ahead (PR #4) whose *content* we already had, so the rebase was a clean
+replay: `git diff origin/master...HEAD` was **byte-identical** before and after
+(same SHA-256). Only the commit SHAs moved — which, correctly, **staled both gates**
+and forced a re-arm. That is the sha-keyed design doing its job on a real rebase.
+
+**The `parse-claims.cjs` change was never "just a comment."** It had been carried
+uncommitted across several sessions on that description. It is a **functional fix to
+a silent-failure bug in the Layer-1 parser this whole gate depends on**: the
+`CLAIM_HEADER` line anchor was a bare `:(\d+)$`, which does not match the RANGE form
+the Codex CLI routinely emits (`file.ts:860-860`). A real Codex review of ranged
+findings therefore parsed as **ZERO claims** — reported as a clean pass, exit 0, no
+warning. Folded into this PR.
+
+**Reviewing that fix found a P1 in the fix**, which is the whole point of doing it:
+the range delimiter accepted only an **ASCII hyphen**, while the summary separator
+had already been widened to `[—–-]` precisely because Codex doesn't reliably emit
+ASCII. An en-dash is the *typographically correct* character for a numeric range
+("120–145"). And the failure is worse than a bare miss — an unmatched header isn't
+dropped, it's **absorbed into the previous claim's `body`**, so the tool reports a
+plausible non-zero count (2 of 3) while a real finding is invisible. Reproduced,
+then fixed. A confirm-pass (adversarial verifier, mutation-tested) then found one
+more realistic swallow — a header ending in ordinary sentence punctuation
+(`b.ts:81.`), which LLM-written bullet lines produce constantly. Also fixed.
+
+The anchor is now **deliberately permissive** (dash class + spaces + trailing
+punctuation). The asymmetry is the reason: over-matching a header is recoverable;
+silently losing a review finding is not.
+
+`parse-claims` **had no test at all** — its fixtures file was checked in but never
+read by anything. It now has 9, pinning the header grammar. Every range/punctuation
+case fails against the regex it replaces.
+
+### The pattern, stated plainly
+
+Three times now, on three different files, the same shape: **a silent failure in the
+thing that is supposed to catch failures.** The gate that pruned markers without
+their evidence. The regex that dropped claims without saying so. Both were found only
+by *actually running the tool against adversarial input* — never by reading it. And
+each fix, when reviewed, contained another bug of the same class.
+
+The operational lesson is not "review more." It is that a **clean result from a
+verifier is only evidence if the verifier was exercised against a case that could
+have failed.** A review that returns NO_FINDINGS on a diff it never ran is worth
+approximately nothing — which is exactly what a parser silently reporting zero claims
+had been producing.
+
+### Where it stands
+
+- **2 commits**, rebased onto `origin/master` (0 behind), pushed. PR #5 `MERGEABLE`,
+  blocked only on **2 required approvals** (no CI checks configured on this repo).
+- **25 + 9 JS, 13 + 242 Python** — all green. All three gates pass for HEAD.
+- Working tree clean. Nothing left uncommitted.
+
+### Open / next
+
+1. **Await 2 approvals on PR #5**, then merge. If anything else lands on `master`
+   first, the branch goes out-of-date again (`strict: true`) → rebase → the gates
+   re-arm and must be re-earned. That is intended, not friction.
+2. After merge: delete the remote branch, and run `/squash-cleanup` to drop the
+   `pre-squash.bundle` / `last-squash.json` backups under
+   `.claude/sessions/feature%2Fthree-gate-finishing-checkpoint/`.
+3. Codex CLI has a usage cap the user guards — **ask before invoking it**. Note that
+   this branch's final review rounds ran **reviewer-only** (Codex declined), so the
+   cross-validation Layer 1 is designed around did not happen on this diff.
+4. Residual, knowingly unfixed in `parse-claims` (documented, not silent): a
+   `file.ts:12:34` column suffix mis-splits the file field, and exotic Unicode dashes
+   (U+2011/2012/2212) are still unmatched. No evidence Codex emits either shape.
