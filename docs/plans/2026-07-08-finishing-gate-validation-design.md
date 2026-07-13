@@ -414,6 +414,59 @@ validation check; absent validation checker → skipped.
   users; the finishing gate is the primary enforcement point.
 - **Provenance:** two branches sharing an ancestor sha can share a Gate-2/3
   marker once a docs commit lands. Content-identical, so byte-safe; documented.
+- **Markers stranded by history rewriting are not collected automatically**
+  (2026-07-13). `pruneStale` only deletes a marker whose sha is an ancestor of the
+  kept sha — deliberately, so a divergent branch's marker survives. A sha abandoned
+  by squash/amend/rebase is an ancestor of *nothing*, so it is never pruned, and the
+  orphan marker pins its evidence dir alive. This branch alone left 21 orphan markers
+  and 4 evidence dirs (~72K) behind.
+
+  **Resolved as a REPORT, not a sweep — `/gate-gc`.** Six automatic designs were
+  written, and adversarial review reproduced a live deletion in **every one** — of a
+  real marker and, through the evidence cascade, the stored validation artifacts
+  behind it. The root cause is that **git cannot distinguish an object that is GONE
+  from one it merely cannot READ**, through any channel:
+
+  | signal | absent | present but faulted |
+  |---|---|---|
+  | `cat-file -e` | 128 | 128 |
+  | `rev-parse --verify -q` | 1, empty stderr | 1, empty stderr *(when packed)* |
+  | `for-each-ref --contains` | 129 `no such commit` | 129 `no such commit` |
+  | `cat-file --batch-all-objects` | omitted | rc=0, **silently** omitted |
+  | `merge-base --is-ancestor` | 1 | 1 *(a corrupt **commit-graph** lies here while every object is pristine)* |
+
+  The six breaks, each caught by reproducing the deletion rather than by reading the
+  code: (1) `cat-file -e` + `gitOk` pruned on any error, deleting the live HEAD marker
+  in the same run that had just used it to grant a PASS; (2) the `rev-parse`
+  empty-stderr discriminator holds for *loose* objects only — an unreadable **pack**
+  gives the identical answer, and after any `git gc` nearly everything is packed; (3) a
+  positive control on HEAD's object only proves *HEAD's* pack reads, so corrupting a
+  different pack in a multi-pack repo still deleted a tag-reachable marker; (4) a
+  filesystem readability check misses a pack that is **readable but corrupt** (bit rot,
+  truncated write, killed `gc`); (5) `git verify-pack` on every pack misses a corrupt
+  **commit-graph**, which lies about reachability while every object and permission is
+  intact; (6) and none of it sees a faulted `objects/info/alternates` store.
+
+  Break 5 was fixed *structurally* — every reachability query now runs with
+  `core.commitGraph=false core.multiPackIndex=false`, so we don't detect the lying
+  cache, we refuse to consult it. But break 6 landed anyway, and that settled it:
+  **"prove this object is gone" is an unbounded verification burden, and what sits on
+  the other side of a wrong answer is your validation evidence.**
+
+  So `/gate-gc` **reports** and a human deletes. It has no `--force` and contains no
+  deletion code (a test asserts that against its source). It refuses to even print
+  unless the store is provably intact — every pack readable *and* passing `git
+  verify-pack`, including alternates walked transitively. `pruneUnreachable` was removed
+  from `gate-lib` entirely, so no "is it gone?" primitive exists to be wired back into
+  the hot path. A marker is kept if its commit is reachable from any ref, any worktree
+  HEAD, **or the reflog** — `git reset --hard` and `/undo-squash` are ordinary undo
+  workflows, and a commit one `git reset --hard @{1}` from being HEAD again must not
+  lose its evidence.
+
+  **The lesson, stated once:** *"this tool cannot delete" is an invariant you can
+  verify; "this tool can always tell gone from unreadable" was false six times.* When a
+  safety property needs an ever-growing list of conditions to hold, that is the signal
+  to remove the capability, not to add the next condition.
 - **Artifacts under `docs/`** deleted by a later docs-only cleanup fail Gate 3
   closed (safe direction) — a UX sharp edge, not a hole.
 - **Node dependency** for Gates 2/3 — fails open with a note when absent, so
