@@ -1,7 +1,7 @@
 # Design: Three-Gate Finishing Checkpoint (v2)
 
 Date: 2026-07-08
-Status: Approved (brainstorming + adversarial review) — pending implementation
+Status: SHIPPED — merged to master in PR #5 (2026-07-13). Follow-up `/gate-gc` merged in PR #7.
 Components:
 - `hooks/session-checkpoint.py` (rewritten)
 - `skills/code-review/scripts/gate-lib.cjs` (new — shared)
@@ -812,17 +812,23 @@ had been producing.
 - **25 + 9 JS, 13 + 242 Python** — all green. All three gates pass for HEAD.
 - Working tree clean. Nothing left uncommitted.
 
+### Where it ended (2026-07-13)
+
+- **PR #5 merged** — the three-gate checkpoint, plus the `parse-claims` ranged-claim fix
+  (SG-13996) folded in.
+- **PR #7 merged** — `/gate-gc`, which REPORTS stranded markers and evidence and cannot
+  delete (see §Risks & Residual Gaps for the six refuted deleting designs).
+- **PR #6 closed** — superseded by #7; it recorded the gap without closing it.
+- Suites: **33** gate-lib, **9** parse-claims, **13** session-checkpoint (Python), **242**
+  pytest. All green on master.
+
 ### Open / next
 
-1. **Await 2 approvals on PR #5**, then merge. If anything else lands on `master`
-   first, the branch goes out-of-date again (`strict: true`) → rebase → the gates
-   re-arm and must be re-earned. That is intended, not friction.
-2. After merge: delete the remote branch, and run `/squash-cleanup` to drop the
-   `pre-squash.bundle` / `last-squash.json` backups under
-   `.claude/sessions/feature%2Fthree-gate-finishing-checkpoint/`.
-3. Codex CLI has a usage cap the user guards — **ask before invoking it**. Note that
-   this branch's final review rounds ran **reviewer-only** (Codex declined), so the
-   cross-validation Layer 1 is designed around did not happen on this diff.
-4. Residual, knowingly unfixed in `parse-claims` (documented, not silent): a
-   `file.ts:12:34` column suffix mis-splits the file field, and exotic Unicode dashes
-   (U+2011/2012/2212) are still unmatched. No evidence Codex emits either shape.
+1. `/gate-gc` is report-only, so stranded-marker cleanup stays a human step. If that gets
+   tiresome, the honest alternative is **not** to make it delete — it is to stop writing a
+   per-sha evidence dir at all and cap the evidence store by size/age instead. That is a
+   different design and deserves its own brainstorm.
+2. Codex CLI has a usage cap the user guards — **ask before invoking it**. Note the whole
+   final stretch of this work ran **reviewer-only** (Codex declined), so Layer 1's
+   cross-validation did not happen on those diffs — and the reviewer alone still found a
+   reproduced P2 that an earlier *Codex-clean* round had missed.
