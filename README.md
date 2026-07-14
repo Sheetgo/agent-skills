@@ -21,6 +21,7 @@ agent-skills/
 │   ├── code-review.md
 │   ├── commit.md
 │   ├── fix-issues.md
+│   ├── gate-gc.md
 │   ├── generate-api-tests.md
 │   ├── implementation-audit.md
 │   ├── plan-hardening.md
