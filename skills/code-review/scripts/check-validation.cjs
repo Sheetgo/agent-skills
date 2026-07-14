@@ -79,6 +79,10 @@ if (!verdict.ok) out(1, `evidence check failed: ${verdict.reason}`);
 // orphans the artifacts in the git common-dir: this checker runs on every finish
 // attempt and every push, far more often than the recorder, so the orphans would
 // accumulate unreclaimed until the next record-validation happened to sweep them.
+// Markers stranded by history rewriting are NOT collected here — see check-marker.cjs
+// and gate-gc.cjs. Automatic "is this commit gone?" pruning is unsafe: git reports an
+// unreadable object identically to an absent one, and a wrong answer here would delete
+// a live marker AND cascade into pruneEvidence destroying its stored artifacts.
 lib.pruneStale(repoRoot, gitDirAbs, PREFIX, match.sha);
 lib.pruneEvidence(gitDirAbs, lib.shasWithMarkers(gitDirAbs, PREFIX));
 

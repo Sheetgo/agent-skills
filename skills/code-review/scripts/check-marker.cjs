@@ -58,6 +58,11 @@ if (!match) {
 }
 
 // Marker present — prune superseded (ancestor) markers, keeping the matched one.
+// Markers STRANDED by history rewriting (an abandoned sha is an ancestor of nothing,
+// so pruneStale can never reach them) are deliberately NOT collected here: deciding
+// "this commit is gone" is unsafe automatically — git reports an unreadable object
+// exactly like an absent one, so a transient fault would delete live markers. That
+// sweep is a human-invoked maintenance step instead: gate-gc.cjs (/gate-gc).
 lib.pruneStale(repoRoot, gitDirAbs, PREFIX, match.sha);
 
 const via = match.exact ? `${headSha.slice(0, 8)}` : `docs-only ancestor ${match.sha.slice(0, 8)}`;

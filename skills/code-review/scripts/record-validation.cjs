@@ -201,7 +201,9 @@ if (hadOld) {
 }
 
 lib.pruneStale(repoRoot, gitDirAbs, PREFIX, headSha);
-// Drop evidence dirs whose marker no longer exists.
+// Drop evidence dirs whose marker no longer exists. (Markers stranded by history
+// rewriting are collected by the human-invoked gate-gc.cjs, not automatically —
+// see check-marker.cjs for why.)
 lib.pruneEvidence(gitDirAbs, lib.shasWithMarkers(gitDirAbs, PREFIX));
 
 const n = storedChecks.reduce((acc, c) => acc + c.artifacts.length, 0);

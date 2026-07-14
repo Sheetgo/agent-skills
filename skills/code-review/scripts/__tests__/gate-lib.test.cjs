@@ -631,3 +631,262 @@ test('gate-lib: markers, tolerance and pruning work in a SHA-256 repo (regressio
   assert.ok(!fs.existsSync(path.join(gd, `validation-passed-${A}`)), 'superseded 64-char marker A pruned');
   assert.ok(fs.existsSync(path.join(gd, `validation-passed-${C}`)), 'current marker C kept');
 });
+
+// ---- unreachable-sha sweep (markers stranded by history rewriting) ----------
+//
+// This code DELETES markers (and, downstream, the evidence they point at), so the
+// tests below weight false-prune far more heavily than missed-prune. A marker is
+// swept only when its commit is unrecoverable: no ref, no worktree HEAD, no reflog
+// entry — or gone from the object DB.
+
+const P_CR = 'code-review-passed-';
+
+function expireReflog(repo) {
+  git(repo, ['reflog', 'expire', '--expire-unreachable=now', '--expire=now', '--all']);
+}
+
+
+// ---- isShaReachable: what gate-gc's REPORT is built on -----------------------
+// It no longer deletes anything, but a wrong verdict still misleads a human into
+// deleting evidence by hand. Everything here is weighted toward "never call a live
+// commit unreachable".
+
+test('isShaReachable: reflog-recoverable, divergent-branch, tag-only and detached-worktree commits are all REACHABLE', () => {
+  const repo = initRepo();
+  writeFile(repo, 'a.txt', 'v1');
+  const AMENDED_AWAY = commitAll(repo, 'v1');
+  writeFile(repo, 'a.txt', 'v2');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-q', '--amend', '-m', 'v1 (amended)']);
+  // Still one `git reset --hard @{1}` away from being HEAD — must NOT look gone.
+  assert.strictEqual(lib.isShaReachable(repo, AMENDED_AWAY), true, 'reflog-recoverable');
+
+  git(repo, ['checkout', '-q', '-b', 'other']);
+  writeFile(repo, 'o.txt', 'o');
+  const ON_BRANCH = commitAll(repo, 'other');
+  git(repo, ['checkout', '-q', '-']);
+
+  git(repo, ['checkout', '-q', '-b', 'tagme']);
+  writeFile(repo, 't.txt', 't');
+  const ON_TAG = commitAll(repo, 'tagged');
+  git(repo, ['tag', 'keepme']);
+  git(repo, ['checkout', '-q', '-']);
+  git(repo, ['branch', '-q', '-D', 'tagme']);
+
+  writeFile(repo, 'w.txt', 'w');
+  const PINNED = commitAll(repo, 'pinned');
+  const wt = path.join(mkTmp('gate-wt-'), 'W');
+  git(repo, ['worktree', 'add', '-q', '--detach', wt, PINNED]);
+  git(repo, ['reset', '-q', '--hard', 'HEAD~1']);
+
+  expireReflog(repo); // strip the reflog so only ref/worktree reachability can save them
+  assert.strictEqual(lib.isShaReachable(repo, ON_BRANCH), true, 'divergent branch');
+  assert.strictEqual(lib.isShaReachable(repo, ON_TAG), true, 'tag only');
+  assert.strictEqual(lib.isShaReachable(repo, PINNED), true, 'detached worktree HEAD');
+  git(repo, ['worktree', 'remove', '--force', wt]);
+});
+
+test('isShaReachable: a git fault yields null (unknown), never false', (t) => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return t.skip('running as root — chmod would not block the read');
+  }
+  const repo = initRepo();
+  const gd = commonDir(repo);
+  writeFile(repo, 'a.txt', 'v1');
+  const PARENT = commitAll(repo, 'v1');
+  writeFile(repo, 'b.txt', 'v2');
+  commitAll(repo, 'v2');
+  expireReflog(repo);
+
+  const obj = path.join(gd, 'objects', PARENT.slice(0, 2), PARENT.slice(2));
+  fs.chmodSync(obj, 0o000);
+  let verdict;
+  try {
+    verdict = lib.isShaReachable(repo, PARENT);
+  } finally {
+    fs.chmodSync(obj, 0o444);
+  }
+  assert.strictEqual(verdict, null, 'git could not tell us -> unknown, NOT unreachable');
+});
+
+test('isShaReachable: a LYING commit-graph cannot make a live commit look unreachable', () => {
+  // git's commit-graph answers reachability without walking objects and `git gc` writes it
+  // in essentially every repo. One corrupt byte and `merge-base --is-ancestor` reports a
+  // commit that IS on master as unreachable — while every object, pack and permission is
+  // pristine, so NO integrity check can see it. We simply do not consult the caches.
+  const repo = initRepo();
+  const gd = commonDir(repo);
+  for (let i = 0; i < 6; i += 1) {
+    writeFile(repo, 'a.txt', `v${i}`);
+    commitAll(repo, `feat: Commit ${i}`);
+  }
+  const OLDEST = git(repo, ['rev-parse', 'HEAD~5']);
+  git(repo, ['commit-graph', 'write', '--reachable']);
+  expireReflog(repo);
+
+  const cg = path.join(gd, 'objects', 'info', 'commit-graph');
+  if (!fs.existsSync(cg)) return; // git too old — nothing to defend against
+  const orig = fs.readFileSync(cg);
+  const mode = fs.statSync(cg).mode;
+  const corrupt = (off) => {
+    fs.chmodSync(cg, 0o644);
+    const b = Buffer.from(orig);
+    b[off] ^= 0xff;
+    fs.writeFileSync(cg, b);
+    fs.chmodSync(cg, mode);
+  };
+  const isAncestor = (extra) => {
+    try {
+      execFileSync('git', ['-C', repo, ...extra, 'merge-base', '--is-ancestor', OLDEST, 'HEAD'], { stdio: 'ignore' });
+      return true;
+    } catch (_e) { return false; }
+  };
+
+  // The graph's bytes depend on the commit shas, so hunt for an offset that actually lies.
+  let lying = false;
+  for (let off = 8; off < orig.length && !lying; off += 1) {
+    corrupt(off);
+    if (isAncestor(['-c', 'core.commitGraph=false']) && !isAncestor([])) lying = true;
+  }
+  assert.ok(lying, 'sanity: could not get the commit-graph to lie — test would be vacuous');
+
+  assert.strictEqual(lib.isShaReachable(repo, OLDEST), true,
+    'a lying commit-graph must not make a master-reachable commit look gone');
+});
+
+test('objectStoreIntact: ok on a healthy repo; flags a CORRUPT-but-readable pack', () => {
+  const repo = initRepo();
+  const gd = commonDir(repo);
+  writeFile(repo, 'a.txt', 'x');
+  commitAll(repo, 'a');
+  assert.strictEqual(lib.objectStoreIntact(repo, gd).ok, true, 'loose repo intact');
+  git(repo, ['gc', '-q']);
+  assert.strictEqual(lib.objectStoreIntact(repo, gd).ok, true, 'packed repo intact');
+
+  // Bit rot: permissions stay perfect, contents do not. access(R_OK) cannot see this.
+  const packDir = path.join(gd, 'objects', 'pack');
+  const victim = path.join(packDir, fs.readdirSync(packDir).find((f) => f.endsWith('.pack')));
+  const mode = fs.statSync(victim).mode;
+  fs.chmodSync(victim, 0o644);
+  const fd = fs.openSync(victim, 'r+');
+  const buf = Buffer.alloc(1);
+  fs.readSync(fd, buf, 0, 1, 200);
+  fs.writeSync(fd, Buffer.from([buf[0] ^ 0xff]), 0, 1, 200);
+  fs.closeSync(fd);
+  fs.chmodSync(victim, mode);
+
+  const verdict = lib.objectStoreIntact(repo, gd);
+  assert.strictEqual(verdict.ok, false, 'a corrupt-but-readable pack must be caught');
+  assert.match(verdict.problems.join(' '), /corrupt/i);
+});
+
+// gate-gc is REPORT-ONLY. Six deleting designs were each shown to destroy a live marker
+// and its validation evidence, every one via a different way git can report a present
+// object as absent. "This tool cannot delete" is an invariant we can actually verify;
+// "this tool can always tell gone from unreadable" was false six times.
+
+test('gate-gc: contains NO deletion code at all (the invariant)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'gate-gc.cjs'), 'utf8');
+  for (const forbidden of ['unlinkSync', 'rmSync', 'rmdirSync', 'renameSync', 'writeFileSync']) {
+    assert.ok(!src.includes(forbidden),
+      `gate-gc must not mutate the filesystem, found ${forbidden}()`);
+  }
+  assert.ok(!/--force/.test(src), 'gate-gc must not offer a --force flag');
+});
+
+test('gate-gc: reports stranded markers and evidence, and deletes nothing', () => {
+  const repo = initRepo();
+  const outDir = mkTmp('gate-src9-');
+  const log = path.join(outDir, 'run.log');
+  fs.writeFileSync(log, 'suite green');
+  const payload = JSON.stringify({
+    changeClass: 'backend',
+    checks: [{ kind: 'test', command: 'npm test', exitCode: 0, artifacts: [log] }],
+  });
+
+  writeFile(repo, 'src/app.js', 'v1');
+  const ABANDONED = commitAll(repo, 'code v1');
+  assert.strictEqual(runScript('record-validation.cjs', repo, [], payload).code, 0, 'record at v1');
+  writeFile(repo, 'src/app.js', 'v2');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-q', '--amend', '-m', 'code v1 (amended)']);
+  assert.strictEqual(runScript('record-validation.cjs', repo, [], payload).code, 0, 'record at amended head');
+  const LIVE = git(repo, ['rev-parse', 'HEAD']);
+  expireReflog(repo);
+
+  const gd = commonDir(repo);
+  const evRoot = path.join(gd, 'validation-evidence');
+
+  const res = runScript('gate-gc.cjs', repo, ['--json']);
+  assert.strictEqual(res.code, 0, `should report: ${res.out}`);
+  const report = JSON.parse(res.out);
+  assert.ok(report.stranded.some((f) => f.includes(ABANDONED)), 'the stranded marker is reported');
+  assert.ok(report.evidence.includes(ABANDONED), 'its evidence dir is reported');
+  assert.ok(!report.stranded.some((f) => f.includes(LIVE)), 'the live marker is NOT reported as stranded');
+
+  // ...and NOTHING was touched.
+  assert.ok(fs.existsSync(path.join(gd, `validation-passed-${ABANDONED}`)), 'stranded marker still on disk');
+  assert.ok(fs.existsSync(path.join(evRoot, ABANDONED)), 'stranded evidence still on disk');
+  assert.ok(fs.existsSync(path.join(gd, `validation-passed-${LIVE}`)), 'live marker untouched');
+  assert.ok(fs.existsSync(path.join(evRoot, LIVE)), 'live evidence untouched');
+});
+
+test('gate-gc: REFUSES to even report when a pack is unreadable or corrupt', (t) => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return t.skip('running as root — chmod would not block the read');
+  }
+  const repo = initRepo();
+  const gd = commonDir(repo);
+  writeFile(repo, 'a.txt', 'x');
+  const SHA = commitAll(repo, 'a');
+  git(repo, ['gc', '-q']);
+  fs.writeFileSync(path.join(gd, `${P_CR}${SHA}`), '');
+
+  const packDir = path.join(gd, 'objects', 'pack');
+  const victim = path.join(packDir, fs.readdirSync(packDir).find((f) => f.endsWith('.pack')));
+  fs.chmodSync(victim, 0o000);
+  let res;
+  try {
+    res = runScript('gate-gc.cjs', repo);
+  } finally {
+    fs.chmodSync(victim, 0o444);
+  }
+  assert.strictEqual(res.code, 2, `must refuse, got ${res.code}: ${res.out}`);
+  assert.match(res.out, /REFUSING TO REPORT/, 'a misleading report is worse than none');
+});
+
+test('objectStoreIntact: a faulted ALTERNATE object store is detected (regression: alternates blind spot)', (t) => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    return t.skip('running as root — chmod would not block the read');
+  }
+  // Objects can live in an alternate store (`clone --reference`, shared CI caches).
+  // A faulted alternate makes commits that live ONLY there look absent, and no check of
+  // THIS repo's own packs can see it — the sixth and final refutation of the deleting
+  // designs. Preflight must now walk alternates too.
+  const base = initRepo();
+  writeFile(base, 'a.txt', 'a');
+  commitAll(base, 'A');
+  git(base, ['repack', '-a', '-d', '-q']);
+  const baseObjects = path.join(commonDir(base), 'objects');
+
+  const main = initRepo();
+  const mainGd = commonDir(main);
+  fs.mkdirSync(path.join(mainGd, 'objects', 'info'), { recursive: true });
+  fs.writeFileSync(path.join(mainGd, 'objects', 'info', 'alternates'), `${baseObjects}\n`);
+  writeFile(main, 'b.txt', 'b');
+  commitAll(main, 'B');
+
+  assert.strictEqual(lib.objectStoreIntact(main, mainGd).ok, true, 'healthy alternate -> intact');
+
+  const altPackDir = path.join(baseObjects, 'pack');
+  const victim = path.join(altPackDir, fs.readdirSync(altPackDir).find((f) => f.endsWith('.pack')));
+  fs.chmodSync(victim, 0o000);
+  let verdict;
+  try {
+    verdict = lib.objectStoreIntact(main, mainGd);
+  } finally {
+    fs.chmodSync(victim, 0o444);
+  }
+  assert.strictEqual(verdict.ok, false, 'a faulted ALTERNATE store must be caught, not just our own packs');
+  assert.match(verdict.problems.join(' '), /unreadable pack/i);
+});
